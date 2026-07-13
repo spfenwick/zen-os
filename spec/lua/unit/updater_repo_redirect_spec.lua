@@ -130,14 +130,14 @@ describe("updater repository redirects", function()
                 end
                 request.sink(release_body or string.format([[
                     [{
-                        "url":"https://api.github.com/repos/xZenLabs/zen-os-renamed/releases/12345",
+                        "url":"https://api.github.com/repos/spfenwick/zen-os-renamed/releases/12345",
                         "tag_name":"v999.0.0",
                         "prerelease":false,
                         "body":"Renamed repository release",
                         "published_at":"2026-07-12T00:00:00Z",
                         "assets":[{
                             "name":"%s",
-                            "browser_download_url":"https://github.com/xZenLabs/zen-os-renamed/releases/download/v999.0.0/%s",
+                            "browser_download_url":"https://github.com/spfenwick/zen-os-renamed/releases/download/v999.0.0/%s",
                             "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         }]
                     }]
@@ -173,7 +173,7 @@ describe("updater repository redirects", function()
         assert.are.equal("ok", updater.check_for_update())
         assert.are.equal(2, #requests)
         assert.are.equal(
-            "https://api.github.com/repos/xZenLabs/zen-os/releases?per_page=100",
+            "https://api.github.com/repos/spfenwick/zen-os/releases?per_page=100",
             requests[1]
         )
         assert.are.equal(
@@ -337,7 +337,7 @@ describe("updater repository redirects", function()
                 "published_at":"2026-09-03T00:00:00Z",
                 "assets":[{
                     "name":"%s",
-                    "browser_download_url":"https://github.com/xZenLabs/zen-os/releases/download/v3.3.0-alpha1/%s",
+                    "browser_download_url":"https://github.com/spfenwick/zen-os/releases/download/v3.3.0-alpha1/%s",
                     "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 }]
             },{
@@ -346,7 +346,7 @@ describe("updater repository redirects", function()
                 "published_at":"2026-09-02T00:00:00Z",
                 "assets":[{
                     "name":"%s",
-                    "browser_download_url":"https://github.com/xZenLabs/zen-os/releases/download/v3.3.0-beta7/%s",
+                    "browser_download_url":"https://github.com/spfenwick/zen-os/releases/download/v3.3.0-beta7/%s",
                     "digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 }]
             }]
