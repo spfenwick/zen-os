@@ -13,7 +13,7 @@ local MarkdownText = require("common/ui/markdown_text")
 local WifiWait = require("common/wifi_wait")
 local T = ffiutil.template
 
-local GITHUB_OWNER = "xZenLabs"
+local GITHUB_OWNER = "spfenwick"
 local GITHUB_REPO = "zen-os"
 local GITHUB_RELEASES_URL = string.format(
     "https://api.github.com/repos/%s/%s/releases",
@@ -325,9 +325,11 @@ local function parse_release_entries(body)
 end
 
 --- Filter installable entries by channel. Stable: releases only.
---- Beta: releases + beta prereleases, preferring stable for the same M.m.p base.
+--- Beta: releases + beta and custom prereleases, preferring stable for the same M.m.p base.
 local function is_beta_release(entry)
-    return not entry.prerelease or entry.version:match("%-beta%d*$") ~= nil
+    return not entry.prerelease
+        or entry.version:match("%-beta%d*$") ~= nil
+        or entry.version:match("%-custom%d*$") ~= nil
 end
 
 local function filter_entries_for_channel(entries, channel)
