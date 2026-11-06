@@ -38,7 +38,7 @@ jobs:
 
           # Get the latest release tag (including pre-releases)
           LATEST=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName \
-            --jq '.[0].tagName' 2>/dev/null | sed 's/^v//' | sed 's/-custom[0-9]*$//')
+            --jq '.[0].tagName' 2>/dev/null | sed 's/^v//' | sed -E 's/-(alpha|beta|custom)[0-9]*$//')
 
           if [[ -n "$LATEST" ]]; then
             LOWER=$(printf '%s\n%s' "$META_VERSION" "$LATEST" | sort -V | head -1)
@@ -69,9 +69,28 @@ jobs:
         if: steps.version_check.outputs.skip == 'false'
         run: pip install fonttools
 
-      - name: Build plugin zip
+      - name: Download latest ZenOS Launcher
         if: steps.version_check.outputs.skip == 'false'
-        run: bash build.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE=$(gh api repos/xZenLabs/zen-reader-scriptlet/releases/latest)
+          TAG=$(jq -r '.tag_name' <<< "$RELEASE")
+          URL=$(jq -r '.assets[] | select(.name == "ZenReader.sh") | .browser_download_url' <<< "$RELEASE")
+          SHA=$(jq -r '.assets[] | select(.name == "ZenReader.sh") | .digest | sub("^sha256:"; "")' <<< "$RELEASE")
+          [[ "$URL" == "https://github.com/xZenLabs/zen-reader-scriptlet/releases/download/$TAG/ZenReader.sh" ]] || exit 1
+          [[ "$SHA" =~ ^[0-9a-fA-F]{64}$ ]] || exit 1
+          mkdir -p kindle-launcher
+          curl -fsSL "$URL" -o kindle-launcher/ZenReader.sh
+          echo "$SHA  kindle-launcher/ZenReader.sh" | sha256sum -c -
+          grep -Fqx "# Version: ${TAG#v}" kindle-launcher/ZenReader.sh
+          curl -fsSL "https://raw.githubusercontent.com/xZenLabs/zen-reader-scriptlet/$TAG/LICENSE" -o kindle-launcher/LICENSE
+
+      - name: Build and verify plugin zips
+        if: steps.version_check.outputs.skip == 'false'
+        env:
+          ZENOS_REQUIRE_KINDLE_LAUNCHER: "1"
+        run: ./spec/run package-check
 
       - name: Build release notes
         if: steps.version_check.outputs.skip == 'false'
@@ -86,9 +105,10 @@ jobs:
         run: |
           TAG="${{ steps.version_check.outputs.tag }}"
           gh release create "$TAG" \
+            dist/zenos.koplugin.zip \
             dist/zen_ui.koplugin.zip \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Zen UI $TAG" \
+            --title "ZenOS $TAG" \
             --notes-file release_notes.md \
             --prerelease \
             --target "${{ github.sha }}"
