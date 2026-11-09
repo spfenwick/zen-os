@@ -10,7 +10,7 @@ local ConfigManager = require("config/manager")
 local icons = require("common/inline_icon_map")
 local MarkdownText = require("common/ui/markdown_text")
 
-local GITHUB_OWNER = "xZenLabs"
+local GITHUB_OWNER = "spfenwick"
 local GITHUB_REPO = "zen-os"
 local GITHUB_RELEASES_URL = string.format(
     "https://api.github.com/repos/%s/%s/releases",
