@@ -535,6 +535,15 @@ local function apply_browser_item_table_cache()
         return stable_table_key(filter) .. "@" .. tostring(revision or 0)
     end
 
+    -- Books that plugins add to a folder's listing (common/book_sources)
+    -- change without the folder's timestamp changing.
+    local ok_sources, BookSources = pcall(require, "common/book_sources")
+    local function book_sources_key(path)
+        if not ok_sources or type(BookSources.listingKey) ~= "function" then return "" end
+        local ok, key = pcall(BookSources.listingKey, path)
+        return ok and tostring(key) or ""
+    end
+
     local function stable_key(self, path, override)
         local flat_config = plugin and plugin.config and plugin.config.browser_flat_view
         local show_hidden = self.show_hidden
@@ -559,6 +568,7 @@ local function apply_browser_item_table_cache()
             tostring(G_reader_settings:isTrue("lock_home_folder")),
             tostring(G_reader_settings:readSetting("home_dir")),
             tostring(self.show_current_dir_for_hold == true),
+            book_sources_key(path),
         }, "\31")
     end
 
