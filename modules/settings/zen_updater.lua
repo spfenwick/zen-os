@@ -322,9 +322,11 @@ local function parse_release_entries(body)
 end
 
 --- Filter installable entries by channel. Stable: releases only.
---- Beta: releases + beta prereleases, preferring stable for the same M.m.p base.
+--- Beta: releases + beta and custom prereleases, preferring stable for the same M.m.p base.
 local function is_beta_release(entry)
-    return not entry.prerelease or entry.version:match("%-beta%d*$") ~= nil
+    return not entry.prerelease
+        or entry.version:match("%-beta%d*$") ~= nil
+        or entry.version:match("%-custom%d*$") ~= nil
 end
 
 local function filter_entries_for_channel(entries, channel)

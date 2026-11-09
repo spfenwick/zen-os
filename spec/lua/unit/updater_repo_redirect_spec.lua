@@ -357,6 +357,56 @@ describe("updater repository redirects", function()
         assert.are.equal("3.3.0-beta7", updater.latest_version())
     end)
 
+    it("selects custom prereleases on the beta channel", function()
+        config.updater.update_channel = "beta"
+        release_body = string.format([[
+            [{
+                "tag_name":"v999.0.0-custom2",
+                "prerelease":true,
+                "published_at":"2026-11-09T00:00:00Z",
+                "assets":[{
+                    "name":"%s",
+                    "browser_download_url":"https://github.com/spfenwick/zen-os/releases/download/v999.0.0-custom2/%s",
+                    "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }]
+            },{
+                "tag_name":"v999.0.0-custom1",
+                "prerelease":true,
+                "published_at":"2026-11-08T00:00:00Z",
+                "assets":[{
+                    "name":"%s",
+                    "browser_download_url":"https://github.com/spfenwick/zen-os/releases/download/v999.0.0-custom1/%s",
+                    "digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                }]
+            }]
+        ]], asset_name, asset_name, asset_name, asset_name)
+        local updater = require("modules/settings/zen_updater")
+
+        assert.are.equal("ok", updater.check_for_update())
+        assert.are.equal("999.0.0-custom2", updater.latest_version())
+        assert.is_true(updater.has_update())
+    end)
+
+    it("ignores custom prereleases on the stable channel", function()
+        config.updater.update_channel = "stable"
+        release_body = string.format([[
+            [{
+                "tag_name":"v999.0.0-custom1",
+                "prerelease":true,
+                "published_at":"2026-11-09T00:00:00Z",
+                "assets":[{
+                    "name":"%s",
+                    "browser_download_url":"https://github.com/spfenwick/zen-os/releases/download/v999.0.0-custom1/%s",
+                    "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }]
+            }]
+        ]], asset_name, asset_name)
+        local updater = require("modules/settings/zen_updater")
+
+        assert.are_not.equal("ok", updater.check_for_update())
+        assert.is_nil(updater.latest_version())
+    end)
+
     it("clears the update marker after a version change is acknowledged", function()
         local updater = require("modules/settings/zen_updater")
         assert.are.equal("ok", updater.check_for_update())
