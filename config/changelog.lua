@@ -455,4 +455,10 @@ return {
         "Fix: entire page/chapter being highlighted when navigating with internal book links",
         "Fix: blurred menu background left a blank strip at the bottom",
     },
+    ["4.4.0"] = {
+        "Plugins can add books to Authors, Series, Languages and Tags, Home and To Be Read, with their covers, metadata and reading status",
+        "Library keeps its place and opens faster when you switch to it from another tab",
+        "Library notices books sent or updated by Calibre, and status changes in a filtered view, without a full reload",
+        "Fix: Remove from History missing from the menu of Kindle books on Home",
+    },
 }
