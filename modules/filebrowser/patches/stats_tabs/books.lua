@@ -58,6 +58,31 @@ local function record_from(data)
     }
 end
 
+-- Record for a book source's book without a sidecar here (e.g. a cloud book
+-- read on another device): its source's status and metadata, no md5, so it
+-- links to the statistics database by title and authors.
+local function source_record(file)
+    local BookSources = package.loaded["common/book_sources"]
+    if type(BookSources) ~= "table" or type(BookSources.status) ~= "function" then return nil end
+    local ok_s, known = pcall(BookSources.status, file)
+    if not (ok_s and type(known) == "table") then return nil end
+    local ok_i, info = false, nil
+    if type(BookSources.bookInfo) == "function" then
+        ok_i, info = pcall(BookSources.bookInfo, file, false)
+    end
+    info = ok_i and type(info) == "table" and info or {}
+    local authors = info.authors
+    if type(authors) == "string" then authors = authors:gsub("\n", ", ") end
+    return {
+        file = file,
+        status = known.status,
+        title = type(info.title) == "string" and info.title or "",
+        authors = type(authors) == "string" and authors or "",
+        percent = known.percent_finished,
+        pages = num(info.pages),
+    }
+end
+
 --- Returns an array of records {file,status,title,authors,md5,percent,pages}.
 function M.scan()
     local out = {}
@@ -119,6 +144,8 @@ function M.scan()
                         out[#out + 1] = copy
                     end
                 end
+            else
+                out[#out + 1] = source_record(file)
             end
         end
     end)
