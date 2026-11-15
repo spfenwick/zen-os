@@ -119,6 +119,16 @@ describe("book sources", function()
         assert.is_true(BookSources.revision() > changed)
     end)
 
+    it("signals status changes without changing the books revision", function()
+        local books, statuses = BookSources.revision(), BookSources.statusRevision()
+        BookSources.statusChanged()
+        assert.are.equal(books, BookSources.revision())
+        assert.is_true(BookSources.statusRevision() > statuses)
+        local after_status = BookSources.statusRevision()
+        BookSources.changed()
+        assert.is_true(BookSources.statusRevision() > after_status)
+    end)
+
     describe("metadata", function()
         local BookInfoManager, db_rows, cover_drops
 
@@ -226,6 +236,32 @@ describe("book sources", function()
             BookSources.changed()
             assert.are.equal(2, #cover_drops)
         end)
+    end)
+
+    it("gives the first valid reading status a source has for a book", function()
+        BookSources.register("broken", {
+            books = function() return {} end,
+            status = function() error("offline") end,
+        })
+        BookSources.register("odd", {
+            books = function() return {} end,
+            status = function(path)
+                if path == "/c/odd.epub" then return { status = "loved" } end
+            end,
+        })
+        BookSources.register("cloud", {
+            books = function() return {} end,
+            status = function(path)
+                if path == "/c/read.epub" then return { status = "complete", extra = 1 } end
+                if path == "/c/odd.epub" then return { status = "loved", percent_finished = 1.5 } end
+            end,
+        })
+
+        assert.are.same({ status = "complete" }, BookSources.status("/c/read.epub"))
+        assert.are.same({ percent_finished = 1 }, BookSources.status("/c/odd.epub"))
+        assert.is_nil(BookSources.status("/c/unknown.epub"))
+        assert.is_nil(BookSources.status(nil))
+        assert.is_true(#warnings >= 1)
     end)
 
     it("joins the listing keys of sources that show books in a folder", function()
