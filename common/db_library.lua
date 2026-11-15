@@ -9,6 +9,8 @@
 --
 -- This module iterates ReadHistory, checks each book's DocSettings sidecar,
 -- and counts non-Rakuyomi entries whose summary.status == "complete".
+-- Books from common/book_sources without a sidecar on this device (e.g. a
+-- cloud book read elsewhere) are counted from the status their source gives.
 --
 -- Cost notes: DocSettings:open() stats up to ten candidate paths and parses
 -- the WHOLE sidecar (bookmarks, highlights, ...) just to expose summary.  For
@@ -59,6 +61,25 @@ local function sidecar_summary(DocSettings, sidecar_file, mtime, size)
     return cached.summary
 end
 
+-- Book sources, once something has loaded the module (the file browser
+-- does at startup).
+local function book_sources()
+    local BookSources = package.loaded["common/book_sources"]
+    return type(BookSources) == "table" and BookSources or nil
+end
+
+local function sources_revision()
+    local BookSources = book_sources()
+    local fn = BookSources and (BookSources.statusRevision or BookSources.revision)
+    if type(fn) ~= "function" then return 0 end
+    local ok, revision = pcall(fn)
+    return ok and tonumber(revision) or 0
+end
+
+local function is_comic(file)
+    return file:lower():match("%.cb[rz]$") ~= nil
+end
+
 local function prune_summaries()
     if _summary_count <= SUMMARY_CACHE_MAX then return end
     for path, cached in pairs(_summary_cache) do
@@ -81,13 +102,18 @@ end
 --   finished  non-Rakuyomi books whose sidecar summary.status is "complete"
 --   reading   books whose sidecar summary.status is "reading"
 --   total     all books in ReadHistory that have a sidecar file
--- All three counts come from the same ReadHistory walk so reading + finished
--- is always <= total.
--- Results are cached for CACHE_TTL seconds to avoid rescanning on every open.
+-- Book sources' books without a sidecar count by their source's status
+-- (and finished_at), and towards total when the source knows them.
+-- All three counts come from the same walk so reading + finished is always
+-- <= total.
+-- Results are cached for CACHE_TTL seconds to avoid rescanning on every
+-- open, or until a book source reports a change.
 function LibraryDB.getBookCounts(exclude_cbz_cbr)
     local now = os.time()
     local cached = _cache[exclude_cbz_cbr == true and "without_comics" or "all"]
-    if cached.book_counts and (now - cached.cache_time) < CACHE_TTL then
+    local source_revision = sources_revision()
+    if cached.book_counts and (now - cached.cache_time) < CACHE_TTL
+            and cached.source_revision == source_revision then
         logger.info("returning cached book counts")
         return cached.book_counts
     end
@@ -101,6 +127,26 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
     }
     local month = os.date("%Y-%m")
     local year = os.date("%Y")
+
+    -- finished_date: "YYYY-MM-DD..." (summary.modified), or nil.
+    local function tally(file, status, finished_date)
+        counts.total = counts.total + 1
+        if status == "complete"
+                and (file:lower():sub(-4) ~= ".cbz"
+                    or not Rakuyomi.isChapterFile(file)) then
+            counts.finished = counts.finished + 1
+            if type(finished_date) == "string" then
+                if finished_date:sub(1, 7) == month then
+                    counts.finished_this_month = counts.finished_this_month + 1
+                end
+                if finished_date:sub(1, 4) == year then
+                    counts.finished_this_year = counts.finished_this_year + 1
+                end
+            end
+        elseif status == "reading" then
+            counts.reading = counts.reading + 1
+        end
+    end
 
     -- Count finished books from sidecar status
     local ok, err = pcall(function()
@@ -116,6 +162,7 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
         local home_dir = paths.getHomeDir()
 
         _summary_walk = _summary_walk + 1
+        local counted = {} -- files already tallied
         local hist = ReadHistory.hist or {}
         for _i, entry in ipairs(hist) do
             local file = entry.file
@@ -123,7 +170,7 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
             if file and home_dir and not paths.isInHomeDir(file) then
                 file = nil
             end
-            if file and exclude_cbz_cbr == true and file:lower():match("%.cb[rz]$") then
+            if file and exclude_cbz_cbr == true and is_comic(file) then
                 file = nil
             end
             if file then
@@ -134,33 +181,35 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
                     local attrs = lfs.attributes(sidecar_file)
                     local mtime = attrs and attrs.modification
                     local size = attrs and attrs.size
-                    if mtime and size and size > 0 then
-                        counts.total = counts.total + 1
+                    if mtime and size and size > 0 and not counted[file] then
+                        counted[file] = true
                         local summary = sidecar_summary(DocSettings, sidecar_file, mtime, size)
-                        if summary then
-                            local status = summary.status
-                            if status == "complete"
-                                    and (file:lower():sub(-4) ~= ".cbz"
-                                        or not Rakuyomi.isChapterFile(file)) then
-                                counts.finished = counts.finished + 1
-                                local modified = summary.modified
-                                if type(modified) == "string" then
-                                    if modified:sub(1, 7) == month then
-                                        counts.finished_this_month = counts.finished_this_month + 1
-                                    end
-                                    if modified:sub(1, 4) == year then
-                                        counts.finished_this_year = counts.finished_this_year + 1
-                                    end
-                                end
-                            elseif status == "reading" then
-                                counts.reading = counts.reading + 1
-                            end
-                        end
+                        tally(file, summary and summary.status,
+                            summary and summary.modified)
                     end
                 end
             end
         end
         prune_summaries()
+
+        -- Book sources' books without a sidecar here: their source's status
+        -- (read-only; a sidecar wins, as in common/book_status). The status
+        -- is asked first, since sources keep it cheap.
+        local BookSources = book_sources()
+        if BookSources and type(BookSources.books) == "function"
+                and type(BookSources.status) == "function" then
+            for _i, book in ipairs(BookSources.books()) do
+                local file = book.file
+                if not counted[file]
+                        and not (exclude_cbz_cbr == true and is_comic(file)) then
+                    counted[file] = true
+                    local known = BookSources.status(file)
+                    if known and not DocSettings:findSidecarFile(file) then
+                        tally(file, known.status, known.finished_at)
+                    end
+                end
+            end
+        end
     end)
 
     if not ok then
@@ -172,6 +221,7 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
                 "total=", counts.total)
     cached.book_counts = counts
     cached.cache_time = now
+    cached.source_revision = source_revision
     return counts
 end
 
