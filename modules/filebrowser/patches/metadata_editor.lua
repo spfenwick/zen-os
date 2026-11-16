@@ -998,7 +998,8 @@ local function build_show_from_book_details()
             return false
         end
 
-        local is_epub = Service.isEpub(file) == true
+        -- Edits go into the file only for EPUBs no book source describes.
+        local is_epub = Service.editsEmbedded(file) == true
         local can_restore = false
         if is_epub then
             local ok_restore, available = pcall(Service.canRestore, file)
