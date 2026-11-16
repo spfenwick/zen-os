@@ -71,6 +71,7 @@ describe("metadata editor from Book Details", function()
                 return true
             end,
             isEpub = function(file) return file:sub(-5) == ".epub" end,
+            editsEmbedded = function(file) return file:sub(-5) == ".epub" end,
             canRestore = function() return true end,
             moveEpubBackup = function() return true, false end,
         }
@@ -418,6 +419,7 @@ describe("metadata editor Hardcover controller", function()
                 return { title = "Local title", authors = { "Local author" }, isbn = "123" }
             end,
             isEpub = function() return false end,
+            editsEmbedded = function() return false end,
         })
         ZenSpec.replace("config/hardcover_token", {
             get = function() return hardcover_token end,
