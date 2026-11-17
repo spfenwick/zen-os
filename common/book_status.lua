@@ -175,7 +175,9 @@ end
 
 local function get_fresh_cached_status(file_path, checked_at, allow_booklist)
     local cached = status_cache[file_path]
-    if not cached or (cached.source == "booklist" and not allow_booklist)
+    -- With fallback_info, booklist and book_source entries are rebuilt so the
+    -- caller's table is returned as book_info.
+    if not cached or (cached.source ~= "sidecar" and not allow_booklist)
             or checked_at - cached.validated_at >= STATUS_VALIDATE_TTL_S then return nil end
     if cached.source_revision and cached.source_revision ~= sources_revision() then return nil end
     touch_status(cached)
@@ -551,7 +553,7 @@ function M.getFileStatusData(file_path, fallback_info)
         "source", tostring(source_revision), tostring(file_mtime) }, "|")
     local cache_state
     local existing = status_cache[file_path]
-    if existing and existing.source == "book_source" then
+    if existing and existing.source == "book_source" and fallback_info == nil then
         cached, cache_state = get_validated_cached_status(file_path, source_key, checked_at)
         if cached then
             record_cache_result(cache_state, started_at, file_path)

@@ -321,8 +321,11 @@ describe("book status", function()
         assert.are.equal(1, source_reads)
         assert.are.equal(0, booklist_reads)
         -- Book info passed by a list (the source's bookInfo has no status).
-        local listed = BookStatus.getFileStatusData("/cloud/read.epub", { title = "Read" })
+        -- The cached entry isn't reused for it: the list's table comes back.
+        local listed_info = { title = "Read" }
+        local listed = BookStatus.getFileStatusData("/cloud/read.epub", listed_info)
         assert.are.equal("complete", listed.effective_status)
+        assert.are.equal(listed_info, listed.book_info)
 
         -- Unknown to the source: BookList as before.
         assert.are.equal("new", BookStatus.getEffectiveStatusFromFile("/cloud/unread.epub"))
