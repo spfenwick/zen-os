@@ -492,18 +492,24 @@ function M.dismissHistory(path)
     local reader_settings = reader_settings()
     if not (time and reader_settings) then return false end
     local dismissed = dismissed_history()
-    -- Drop entries whose book the sources no longer list.
-    local listed = {}
+    -- Drop entries whose book the sources no longer list, but only when
+    -- every source listed its history (a failed one may still have them).
+    local listed, complete = {}, true
     for _i, id in ipairs(order) do
-        local entries = type(sources[id].history) == "function"
-            and call(id, sources[id], "history")
-        for _j, entry in ipairs(type(entries) == "table" and entries or {}) do
-            if type(entry) == "table" and entry.file then listed[entry.file] = true end
+        if type(sources[id].history) == "function" then
+            local entries = call(id, sources[id], "history")
+            if type(entries) == "table" then
+                for _j, entry in ipairs(entries) do
+                    if type(entry) == "table" and entry.file then listed[entry.file] = true end
+                end
+            else
+                complete = false
+            end
         end
     end
     local kept = {}
     for file, removed in pairs(dismissed) do
-        if listed[file] then kept[file] = removed end
+        if listed[file] or not complete then kept[file] = removed end
     end
     kept[path] = time
     reader_settings:saveSetting(DISMISSED_KEY, kept)

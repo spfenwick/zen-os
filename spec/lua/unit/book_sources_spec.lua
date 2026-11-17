@@ -365,10 +365,19 @@ describe("book sources", function()
             assert.is_true(BookSources.statusRevision() > statuses)
             assert.are.same({ { file = "/c/b.epub", time = 999 } }, BookSources.history())
 
-            -- Dismissals of books no source lists any more are dropped.
+            -- While a source's history fails, no dismissal is dropped: the
+            -- failed source may still list the book.
             table.remove(entries, 2)
             assert.is_true(BookSources.dismissHistory("/c/b.epub"))
-            assert.are.same({ ["/c/a.epub"] = 100, ["/c/b.epub"] = 999 },
+            assert.are.same({ ["/c/a.epub"] = 100, ["/c/b.epub"] = 999, ["/c/gone.epub"] = 90 },
+                G_reader_settings:readSetting("zen_book_sources_dismissed_history"))
+
+            -- Once every source lists its history, dismissals of books no
+            -- source lists any more are dropped.
+            BookSources.unregister("broken")
+            entries[#entries + 1] = { file = "/c/d.epub", time = 200 }
+            assert.is_true(BookSources.dismissHistory("/c/d.epub"))
+            assert.are.same({ ["/c/a.epub"] = 100, ["/c/b.epub"] = 999, ["/c/d.epub"] = 200 },
                 G_reader_settings:readSetting("zen_book_sources_dismissed_history"))
 
             entries[1].time = 150
