@@ -65,6 +65,45 @@ describe("statistics book records", function()
         }, records[2])
     end)
 
+    it("takes title and authors from books() when a source has no bookInfo()", function()
+        package.loaded["common/book_sources"] = {
+            status = function(path)
+                if path == "/cloud/read.epub" then return { status = "complete" } end
+            end,
+            books = function()
+                return {
+                    { file = "/cloud/other.epub", info = { title = "Other" } },
+                    { file = "/cloud/read.epub", info = { title = "Listed", authors = "B\nC" } },
+                }
+            end,
+        }
+
+        local records = require("modules/filebrowser/patches/stats_tabs/books").scan()
+
+        assert.are.equal(2, #records)
+        assert.are.equal("Listed", records[2].title)
+        assert.are.equal("B, C", records[2].authors)
+    end)
+
+    it("prefers bookInfo() over books() for a source book", function()
+        package.loaded["common/book_sources"] = {
+            status = function(path)
+                if path == "/cloud/read.epub" then return { status = "complete" } end
+            end,
+            bookInfo = function(path)
+                if path == "/cloud/read.epub" then return { title = "Info", authors = "D" } end
+            end,
+            books = function()
+                return { { file = "/cloud/read.epub", info = { title = "Listed", authors = "B" } } }
+            end,
+        }
+
+        local records = require("modules/filebrowser/patches/stats_tabs/books").scan()
+
+        assert.are.equal("Info", records[2].title)
+        assert.are.equal("D", records[2].authors)
+    end)
+
     it("counts a source book with progress but no status as reading", function()
         package.loaded["common/book_sources"] = {
             status = function(path)

@@ -63,8 +63,9 @@ end
 
 -- Record for a book source's book without a sidecar here (e.g. a cloud book
 -- read on another device): its source's status and metadata, no md5, so it
--- links to the statistics database by title and authors.
-local function source_record(file)
+-- links to the statistics database by title and authors. listed_info: the
+-- book's info from BookSources.books(), for sources without bookInfo().
+local function source_record(file, listed_info)
     local BookSources = package.loaded["common/book_sources"]
     if type(BookSources) ~= "table" or type(BookSources.status) ~= "function" then return nil end
     local ok_s, known = pcall(BookSources.status, file)
@@ -73,7 +74,8 @@ local function source_record(file)
     if type(BookSources.bookInfo) == "function" then
         ok_i, info = pcall(BookSources.bookInfo, file, false)
     end
-    info = ok_i and type(info) == "table" and info or {}
+    info = ok_i and type(info) == "table" and info
+        or type(listed_info) == "table" and listed_info or {}
     local authors = info.authors
     if type(authors) == "string" then authors = authors:gsub("\n", ", ") end
     -- progress without a status is reading, as in the status views
@@ -130,6 +132,24 @@ function M.scan()
             end
         end
 
+        -- the sources' books by path, built once when first needed
+        local listed
+        local function listed_info(file)
+            if listed == nil then
+                listed = {}
+                local BookSources = package.loaded["common/book_sources"]
+                if type(BookSources) == "table" and type(BookSources.books) == "function" then
+                    local ok_b, books = pcall(BookSources.books)
+                    for _j, book in ipairs(ok_b and type(books) == "table" and books or {}) do
+                        if type(book) == "table" and book.file and listed[book.file] == nil then
+                            listed[book.file] = book.info
+                        end
+                    end
+                end
+            end
+            return listed[file]
+        end
+
         for _i, file in ipairs(files) do
             local sidecar = DocSettings:findSidecarFile(file)
             if sidecar then
@@ -151,7 +171,7 @@ function M.scan()
                     end
                 end
             else
-                out[#out + 1] = source_record(file)
+                out[#out + 1] = source_record(file, listed_info(file))
             end
         end
     end)
