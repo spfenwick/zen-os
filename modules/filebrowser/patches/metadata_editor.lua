@@ -1184,7 +1184,7 @@ local function build_show_from_book_details()
                     logger.dbg("metadata save complete file=", tostring(target))
                     return true
                 end
-                if edits_embedded and metadata_dirty then
+                if metadata_dirty and Service.editsEmbedded(target) == true then
                     local ConfirmBox = require("ui/widget/confirmbox")
                     UIManager:show(ConfirmBox:new{
                         text = keep_backup
