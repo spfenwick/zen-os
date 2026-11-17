@@ -77,6 +77,27 @@ describe("library statistics", function()
         assert.are.equal(1, counts.finished_this_year)
     end)
 
+    it("counts a sidecar with progress but no status as reading", function()
+        ZenSpec.replace("readhistory", {
+            hist = { { file = "/books/legacy.epub" }, { file = "/books/blank.epub" } },
+            reload = function() end,
+        })
+        ZenSpec.replace("docsettings", {
+            findSidecarFile = function(_, file) return file .. ".sdr/metadata.epub.lua" end,
+            openSettingsFile = function(sidecar_file)
+                if sidecar_file:find("legacy", 1, true) then
+                    return { data = { summary = {}, percent_finished = 0.4 } }
+                end
+                return { data = {} }
+            end,
+        })
+        local counts = require("common/db_library").getBookCounts()
+
+        assert.are.equal(1, counts.reading)
+        assert.are.equal(0, counts.finished)
+        assert.are.equal(2, counts.total)
+    end)
+
     it("reuses parsed sidecar summaries on later scans", function()
         local LibraryDB = require("common/db_library")
         LibraryDB.getBookCounts()

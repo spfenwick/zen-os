@@ -45,10 +45,13 @@ local function record_from(data)
     local authors = props.authors
     if type(authors) == "string" then authors = authors:gsub("\n", ", ") end
     local pages, printed = stable_pages(data)
+    -- progress without a status is reading, as in the status views
+    local status = summary.status
+    if status == nil and tonumber(data.percent_finished) ~= nil then status = "reading" end
     return {
         -- standard pages (KOReader synthetic page length, e.g. 1800 characters)
         std_pages = num(data.pagemap_doc_pages),
-        status = summary.status,
+        status = status,
         printed = printed or nil,   -- pages are publisher (printed) page labels
         title = props.title or "",
         authors = authors or "",
@@ -73,9 +76,12 @@ local function source_record(file)
     info = ok_i and type(info) == "table" and info or {}
     local authors = info.authors
     if type(authors) == "string" then authors = authors:gsub("\n", ", ") end
+    -- progress without a status is reading, as in the status views
+    local status = known.status
+    if status == nil and known.percent_finished ~= nil then status = "reading" end
     return {
         file = file,
-        status = known.status,
+        status = status,
         title = type(info.title) == "string" and info.title or "",
         authors = type(authors) == "string" and authors or "",
         percent = known.percent_finished,

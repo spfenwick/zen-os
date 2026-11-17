@@ -65,6 +65,31 @@ describe("statistics book records", function()
         }, records[2])
     end)
 
+    it("counts a source book with progress but no status as reading", function()
+        package.loaded["common/book_sources"] = {
+            status = function(path)
+                if path == "/cloud/read.epub" then return { percent_finished = 0.3 } end
+                if path == "/cloud/unknown.epub" then return { rating = 4 } end
+            end,
+        }
+
+        local records = require("modules/filebrowser/patches/stats_tabs/books").scan()
+
+        assert.are.equal(3, #records)
+        assert.are.equal("reading", records[2].status)
+        assert.are.equal(0.3, records[2].percent)
+        assert.is_nil(records[3].status)
+    end)
+
+    it("reads a sidecar with progress but no status as reading", function()
+        local record_from = require("modules/filebrowser/patches/stats_tabs/books")._record_from
+
+        assert.are.equal("reading", record_from({ summary = {}, percent_finished = 0.4 }).status)
+        assert.are.equal("complete",
+            record_from({ summary = { status = "complete" }, percent_finished = 0.4 }).status)
+        assert.is_nil(record_from({ summary = {} }).status)
+    end)
+
     it("skips books without a sidecar when no book source is loaded", function()
         package.loaded["common/book_sources"] = nil
 

@@ -58,8 +58,9 @@ local function sidecar_summary(DocSettings, sidecar_file, mtime, size)
         local doc_settings = DocSettings.openSettingsFile(sidecar_file)
         cached.mtime, cached.size = mtime, size
         cached.summary = doc_settings and doc_settings.data.summary or false
+        cached.percent = doc_settings and tonumber(doc_settings.data.percent_finished)
     end
-    return cached.summary
+    return cached.summary, cached.percent
 end
 
 -- Book sources, once something has loaded the module (the file browser
@@ -184,8 +185,11 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
                     local size = attrs and attrs.size
                     if mtime and size and size > 0 and not counted[file] then
                         counted[file] = true
-                        local summary = sidecar_summary(DocSettings, sidecar_file, mtime, size)
-                        tally(file, summary and summary.status,
+                        local summary, percent = sidecar_summary(
+                            DocSettings, sidecar_file, mtime, size)
+                        -- As the status views read it: progress alone is reading.
+                        tally(file, BookStatus.getEffectiveStatus(
+                            summary and summary.status, percent),
                             summary and summary.modified)
                     end
                 end
