@@ -157,6 +157,16 @@ describe("library statistics", function()
             assert.are.equal(6, counts.total)
         end)
 
+        it("counts a source book with progress but no status as reading", function()
+            statuses["/cloud/progress.epub"] = { percent_finished = 0.3 }
+            source_books[#source_books + 1] = { file = "/cloud/progress.epub", info = {} }
+            local counts = require("common/db_library").getBookCounts()
+
+            assert.are.equal(3, counts.reading)
+            assert.are.equal(4, counts.finished)
+            assert.are.equal(7, counts.total)
+        end)
+
         it("leaves out the sources' comics when asked to", function()
             local counts = require("common/db_library").getBookCounts(true)
 

@@ -24,6 +24,7 @@ local logger = require("common/zen_logger").new("db_library")
 local paths = require("common/paths")
 local lfs = require("libs/libkoreader-lfs")
 local Rakuyomi = require("modules/filebrowser/patches/rakuyomi")
+local BookStatus = require("common/book_status")
 
 local LibraryDB = {}
 
@@ -205,7 +206,9 @@ function LibraryDB.getBookCounts(exclude_cbz_cbr)
                     counted[file] = true
                     local known = BookSources.status(file)
                     if known and not DocSettings:findSidecarFile(file) then
-                        tally(file, known.status, known.finished_at)
+                        -- As the status views read it: progress alone is reading.
+                        tally(file, BookStatus.getEffectiveStatus(
+                            known.status, known.percent_finished), known.finished_at)
                     end
                 end
             end
