@@ -91,7 +91,11 @@
 -- Call changed() when a source's books change, so cached groupings are
 -- rebuilt; changed(paths) also drops ZenOS's cached covers and metadata
 -- for those books. Call statusChanged() when only their reading statuses
--- or history change: they are read again, groupings are kept. A source that errors is skipped; the views keep working.
+-- or history change: they are read again, groupings are kept. Call
+-- moved(old_path, new_path) when a book's path changes (a catalog book
+-- downloaded to a file, a file renamed): open views list it at its new
+-- path, and the file browser's cached listings are updated instead of
+-- rebuilt. A source that errors is skipped; the views keep working.
 -- Books whose path db_bookinfo already lists are not added again.
 
 local logger = require("common/zen_logger").new("book_sources")
@@ -174,6 +178,40 @@ end
 function M.changed(paths)
     revision = revision + 1
     if type(paths) == "table" then drop_cached_covers(paths) end
+end
+
+local move_listeners = {}
+
+--- For ZenOS's views: listener(old_path, new_path) is called by moved().
+function M.onMoved(listener)
+    if type(listener) == "function" then move_listeners[#move_listeners + 1] = listener end
+end
+
+--- A source's book moved from old_path to new_path: a catalog book was
+-- downloaded to a file, or a file was renamed or moved to another folder.
+-- Call it once the file is in place and the source's books(), owns() and
+-- listingKey() give the book at its new path. Does what changed({ old_path,
+-- new_path }) does; then open views (the file browser, Authors, Series,
+-- Languages, Tags and their book lists, To Be Read, history, collections
+-- and search lists) list the book at new_path, and ZenOS's cached listings
+-- of the folders are updated and kept rather than rebuilt (the file
+-- browser's listing of a big folder can take seconds to rebuild). Other
+-- changes to those folders since they were listed aren't looked for, so
+-- call it right after the move. new_path may have no file (a downloaded
+-- book deleted, listed by its source again): views still follow it, but
+-- the listings that show it are rebuilt. Returns true when the paths were
+-- valid.
+function M.moved(old_path, new_path)
+    if type(old_path) ~= "string" or old_path == "" or type(new_path) ~= "string"
+            or new_path == "" or old_path == new_path then
+        return false
+    end
+    M.changed({ old_path, new_path })
+    for _i, listener in ipairs(move_listeners) do
+        local ok, err = pcall(listener, old_path, new_path)
+        if not ok then logger.warn("book move listener failed", err) end
+    end
+    return true
 end
 
 --- Changes whenever a source is registered, removed or reports a change.

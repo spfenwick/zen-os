@@ -180,6 +180,23 @@ describe("book sources", function()
         assert.is_true(BookSources.revision() > changed)
     end)
 
+    it("tells move listeners about a moved book, after a failing one", function()
+        local seen = {}
+        BookSources.onMoved(function() error("broken view") end)
+        BookSources.onMoved(function(old_path, new_path)
+            seen[#seen + 1] = { old_path, new_path }
+        end)
+        local before = BookSources.revision()
+
+        assert.is_true(BookSources.moved("/books/cloud-1.epub", "/books/A - B.epub"))
+        assert.is_false(BookSources.moved("/books/a.epub", "/books/a.epub"))
+        assert.is_false(BookSources.moved(nil, "/books/a.epub"))
+
+        assert.are.same({ { "/books/cloud-1.epub", "/books/A - B.epub" } }, seen)
+        assert.is_true(BookSources.revision() > before)
+        assert.are.equal(1, #warnings)
+    end)
+
     it("signals status changes without changing the books revision", function()
         local books, statuses = BookSources.revision(), BookSources.statusRevision()
         BookSources.statusChanged()

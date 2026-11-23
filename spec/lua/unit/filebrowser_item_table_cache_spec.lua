@@ -25,6 +25,7 @@ describe("file browser item-table cache", function()
     local source_readable
     local listing_keys
     local calibre_files
+    local move_listeners
 
     local module_names = {
         "common/cover_utils",
@@ -58,6 +59,12 @@ describe("file browser item-table cache", function()
             end,
             getMenuItemMandatory = function(_self, item, collate)
                 return collate.mandatory_func(item)
+            end,
+            getSortingFunction = function(_self, _collate, reverse)
+                return function(a, b)
+                    if reverse then return a.text > b.text end
+                    return a.text < b.text
+                end
             end,
             getListItem = function(self, _dirpath, filename, fullpath, attributes)
                 return {
@@ -121,6 +128,7 @@ describe("file browser item-table cache", function()
         source_readable = {}
         listing_keys = {}
         calibre_files = {}
+        move_listeners = {}
         saved_modules = {}
         for _i, name in ipairs(module_names) do
             saved_modules[name] = package.loaded[name]
@@ -232,6 +240,7 @@ describe("file browser item-table cache", function()
         ZenSpec.replace("version", { version = "test-koreader" })
         ZenSpec.replace("common/book_sources", {
             listingKey = function(path) return listing_keys[path] or "" end,
+            onMoved = function(listener) move_listeners[#move_listeners + 1] = listener end,
         })
         _G.G_reader_settings = {
             readSetting = function(_, key, default)
@@ -467,6 +476,190 @@ describe("file browser item-table cache", function()
 
         assert.are.equal(2, generated["/library"])
         assert.are.equal(1, generated["/library/series"])
+    end)
+
+    describe("when a source's book moves", function()
+        local function book(name)
+            return {
+                text = name, path = "/library/" .. name, is_file = true,
+                attr = { mode = "file", modification = 1, size = 1 },
+            }
+        end
+
+        local function paths_of(items)
+            local out = {}
+            for _i, item in ipairs(items) do out[#out + 1] = item.path end
+            return out
+        end
+
+        -- A cloud book is downloaded: its file is written into the folder
+        -- and the source's listing key changes.
+        local function download()
+            directory_mtimes["/library"] = 50
+            listing_keys["/library"] = "cloud=v2"
+            fake_now = 100
+        end
+
+        before_each(function()
+            listing_keys["/library"] = "cloud=v1"
+            source_items["/library"] = { book("a.epub"), book("d.epub"), book("cloud-1.epub") }
+        end)
+
+        it("keeps the listing, with the file in its sorted place", function()
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            download()
+
+            local results = chooser:_zen_move_in_item_tables("/library/cloud-1.epub", "/library/c.epub")
+            local items = chooser:genItemTableFromPath("/library")
+
+            assert.are.equal("updated", results["/library"])
+            assert.are.equal(1, generated["/library"])
+            assert.are.equal("memory_hit", chooser._zen_last_item_table_cache_result.cache)
+            assert.are.same({ "/library/a.epub", "/library/c.epub", "/library/d.epub" },
+                paths_of(items))
+        end)
+
+        it("saves the edited listing for the next start", function()
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            run_scheduled()
+            download()
+            chooser:_zen_move_in_item_tables("/library/cloud-1.epub", "/library/c.epub")
+            run_scheduled()
+
+            local restarted = apply_new_filechooser()
+            local items = restarted:genItemTableFromPath("/library")
+            assert.are.equal(1, generated["/library"])
+            assert.are.equal("disk_hit", restarted._zen_last_item_table_cache_result.cache)
+            assert.are.same({ "/library/a.epub", "/library/c.epub", "/library/d.epub" },
+                paths_of(items))
+        end)
+
+        it("edits a listing that is only saved", function()
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            run_scheduled()
+
+            local restarted = apply_new_filechooser()
+            download()
+            local results = restarted:_zen_move_in_item_tables(
+                "/library/cloud-1.epub", "/library/c.epub")
+            local items = restarted:genItemTableFromPath("/library")
+
+            assert.are.equal("updated", results["/library"])
+            assert.are.equal(1, generated["/library"])
+            assert.are.same({ "/library/a.epub", "/library/c.epub", "/library/d.epub" },
+                paths_of(items))
+        end)
+
+        it("rebuilds a listing whose other folders changed", function()
+            local series = {
+                text = "series/", path = "/library/series",
+                attr = { mode = "directory", modification = 1 },
+            }
+            table.insert(source_items["/library"], 1, series)
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            download()
+            directory_mtimes["/library/series"] = 60
+
+            local results = chooser:_zen_move_in_item_tables("/library/cloud-1.epub", "/library/c.epub")
+            chooser:genItemTableFromPath("/library")
+
+            assert.is_nil(results["/library"])
+            assert.are.equal(2, generated["/library"])
+        end)
+
+        it("lists a book moved within the root folder", function()
+            source_items["/"] = {
+                { text = "a.epub", path = "/a.epub", is_file = true, attr = { mode = "file" } },
+                { text = "cloud-1.epub", path = "/cloud-1.epub", is_file = true,
+                    attr = { mode = "file" } },
+            }
+            listing_keys["/"] = "cloud=v1"
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/")
+            directory_mtimes["/"] = 50
+            listing_keys["/"] = "cloud=v2"
+            fake_now = 100
+
+            local results = chooser:_zen_move_in_item_tables("/cloud-1.epub", "/c.epub")
+            local items = chooser:genItemTableFromPath("/")
+
+            assert.are.equal("updated", results["/"])
+            assert.are.equal(1, generated["/"])
+            assert.are.same({ "/a.epub", "/c.epub" }, paths_of(items))
+        end)
+
+        it("makes the entry again when the book replaces a listed file", function()
+            local stale = book("d.epub")
+            source_items["/library"] = { book("a.epub"), stale, book("cloud-1.epub") }
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            download()
+
+            chooser:_zen_move_in_item_tables("/library/cloud-1.epub", "/library/d.epub")
+            local items = chooser:genItemTableFromPath("/library")
+
+            assert.are.same({ "/library/a.epub", "/library/d.epub" }, paths_of(items))
+            assert.are_not.equal(stale, items[2])
+            assert.are.equal(1, generated["/library"])
+        end)
+
+        it("keeps a file moved into a hidden folder out of a flat listing", function()
+            flat_directories = { "/library" }
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            download()
+
+            local results = chooser:_zen_move_in_item_tables(
+                "/library/cloud-1.epub", "/library/.private/c.epub")
+            local items = chooser:genItemTableFromPath("/library")
+
+            assert.are.equal("updated", results["/library"])
+            assert.are.equal(1, generated["/library"])
+            assert.are.same({ "/library/a.epub", "/library/d.epub" }, paths_of(items))
+        end)
+
+        it("leaves listings that don't show the book", function()
+            local chooser = setmetatable({ name = "filemanager" }, { __index = FileChooser })
+            chooser:genItemTableFromPath("/library")
+            chooser:genItemTableFromPath("/other")
+
+            local results = chooser:_zen_move_in_item_tables(
+                "/library/cloud-1.epub", "/library/c.epub")
+
+            assert.is_nil(results["/other"])
+        end)
+
+        it("updates and redraws the file browser when a source reports it", function()
+            local chooser = setmetatable({ name = "filemanager", path = "/library" },
+                { __index = FileChooser })
+            local redrawn = 0
+            chooser.refreshPath = function() redrawn = redrawn + 1 end
+            package.loaded["apps/filemanager/filemanager"].instance = { file_chooser = chooser }
+            chooser:genItemTableFromPath("/library")
+            download()
+
+            local ticks = {}
+            package.loaded["ui/uimanager"].nextTick = function(_self, callback)
+                ticks[#ticks + 1] = callback
+            end
+
+            assert.are.equal(1, #move_listeners)
+            move_listeners[1]("/library/cloud-1.epub", "/library/c.epub")
+            -- After the other views have the new path.
+            assert.are.equal(0, redrawn)
+            assert.are.equal(1, #ticks)
+            ticks[1]()
+            local items = chooser:genItemTableFromPath("/library")
+
+            assert.are.equal(1, redrawn)
+            assert.are.equal(1, generated["/library"])
+            assert.are.same({ "/library/a.epub", "/library/c.epub", "/library/d.epub" },
+                paths_of(items))
+        end)
     end)
 
     it("rejects a persisted listing once its book source is gone", function()

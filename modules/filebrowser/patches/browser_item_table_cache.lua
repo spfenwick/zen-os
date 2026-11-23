@@ -544,7 +544,9 @@ local function apply_browser_item_table_cache()
         return stable_table_key(filter) .. "@" .. tostring(revision or 0)
     end
 
-    local function stable_key(self, path, override)
+    -- The key's part that depends on settings and the chooser (the book
+    -- sources' part follows it, after a \31).
+    local function stable_base(self, path, override)
         local flat_config = plugin and plugin.config and plugin.config.browser_flat_view
         local show_hidden = self.show_hidden
         if show_hidden == nil then show_hidden = FileChooser.show_hidden end
@@ -568,8 +570,23 @@ local function apply_browser_item_table_cache()
             tostring(G_reader_settings:isTrue("lock_home_folder")),
             tostring(G_reader_settings:readSetting("home_dir")),
             tostring(self.show_current_dir_for_hold == true),
-            book_sources_key(path),
         }, "\31")
+    end
+
+    local function stable_key(self, path, override)
+        return stable_base(self, path, override) .. "\31" .. book_sources_key(path)
+    end
+
+    -- The sort a folder's listing uses: its override (if any), collate id,
+    -- collate and reverse flag.
+    local function listing_sort(self, path)
+        local override = folder_sort_override(path)
+        local collate_mode = type(override) == "table" and override.collate
+            or G_reader_settings:readSetting("collate", "strcoll")
+        local collate = (self.collates and self.collates[collate_mode]) or self:getCollate()
+        local reverse = type(override) == "table"
+            and override.reverse or G_reader_settings:isTrue("reverse_collate")
+        return override, collate_mode, collate, reverse
     end
 
     local function attr_signature(attr)
@@ -1000,12 +1017,7 @@ local function apply_browser_item_table_cache()
         end
 
         local started_at = now()
-        local override = folder_sort_override(path)
-        local collate_mode = type(override) == "table" and override.collate
-            or G_reader_settings:readSetting("collate", "strcoll")
-        local collate = (self.collates and self.collates[collate_mode]) or self:getCollate()
-        local reverse = type(override) == "table"
-            and override.reverse or G_reader_settings:isTrue("reverse_collate")
+        local override, collate_mode, collate, reverse = listing_sort(self, path)
         local stable = stable_key(self, path, override)
         local key = stable .. "|" .. directory_signature(path)
         local prepared = self._zen_prepared_item_table
@@ -1139,6 +1151,269 @@ local function apply_browser_item_table_cache()
             "cache=", tostring(detail.cache), "path=", path, "items=", detail.items,
             "signature_mode=", tostring(detail.signature_mode or "none"))
         return result, detail
+    end
+
+    -- ---- edits in place of a rebuild (BookSources.moved) ----------------
+
+    local function copy_map(map)
+        local copied = {}
+        for key, value in pairs(type(map) == "table" and map or {}) do copied[key] = value end
+        return copied
+    end
+
+    -- The cached listing of path as a new value to edit (the cache itself
+    -- is left alone), restored from the saved copy when it isn't in memory.
+    -- nil when there is none, or when it no longer matches the folders it
+    -- depends on, apart from the affected ones (path -> true).
+    local function editable_value(path, affected)
+        local value = shared_cache.values[path]
+        local stored
+        if not value then
+            if pending.clear then return nil end
+            stored = pending.values[path]
+            if stored == nil and (persisted_cache or not persisted_keys or persisted_keys[path]) then
+                stored = load_persisted_cache().values[path]
+            end
+            if type(stored) ~= "table" then return nil end
+        end
+        local source = value or stored
+        local signatures = copy_map(source.child_directory_signatures)
+        for dir in pairs(affected) do
+            if signatures[dir] then
+                -- A child folder's item counts its books: the change alters it.
+                if not source.recursive then return nil end
+                signatures[dir] = directory_signature(dir)
+            end
+        end
+        local candidate = {
+            key = source.key,
+            stable_key = source.stable_key,
+            table = value and value.table,
+            child_directory_signatures = signatures,
+            calibre_signatures = source.calibre_signatures,
+            recursive = source.recursive,
+            scanned_at = source.scanned_at,
+            scanned_until = source.scanned_until,
+        }
+        if stored then
+            if not stored.recursive and type(stored.tree_signature) == "table" then
+                for dir, expected in pairs(stored.tree_signature) do
+                    if not affected[dir] and directory_signature(dir) ~= expected then return nil end
+                end
+            end
+            candidate.table = restore_item_table(stored.table)
+            if not candidate.table then return nil end
+        end
+        if not validate_children(candidate) then return nil end
+        return candidate
+    end
+
+    --- Edits the cached listing of path for a change ZenOS was told of (see
+    -- BookSources.moved), instead of rebuilding it. edit(items, sort) gets a
+    -- copy of the listing's items (the items themselves are shared) and
+    -- returns the new list, nil when the listing isn't affected, or false
+    -- when it can't be edited (the listing is then dropped). sort has the
+    -- listing's override, collate_mode, collate, reverse and recursive
+    -- (flat view). affected: the folders the change itself altered (path ->
+    -- true); every other folder the listing depends on must still match it.
+    -- The edited listing is keyed as current (folder timestamps and the book
+    -- sources' listing keys as they are now), in memory and in the saved
+    -- copy, so the next listing of path is a cache hit. Returns "updated",
+    -- "dropped", or nil (no usable listing, or not affected).
+    function FileChooser:_zen_update_item_table(path, edit, affected)
+        if self._dummy or self.name ~= "filemanager" or type(path) ~= "string"
+                or path == "" or type(edit) ~= "function" then
+            return nil
+        end
+        affected = type(affected) == "table" and affected or {}
+        local override, collate_mode, collate, reverse = listing_sort(self, path)
+        local base = stable_base(self, path, override) .. "\31"
+        local value = editable_value(path, affected)
+        -- Listed with other settings, or out of date: it misses anyway.
+        if not value or type(value.stable_key) ~= "string"
+                or value.stable_key:sub(1, #base) ~= base then
+            return nil
+        end
+        local items = {}
+        for index, item in ipairs(value.table) do items[index] = item end
+        local ok, edited = pcall(edit, items, {
+            override = override, collate_mode = collate_mode, collate = collate,
+            reverse = reverse, recursive = value.recursive == true,
+        })
+        if not ok then
+            logger.warn("Library listing edit failed", "path=", path, tostring(edited))
+            edited = false
+        end
+        if edited == nil then return nil end
+        if type(edited) ~= "table" then
+            self:_zen_invalidate_item_table_path(path)
+            return "dropped"
+        end
+        if collate_mode == "access" then
+            edited = apply_history_order(self, edited, collate, reverse)
+        end
+        value.table = edited
+        value.stable_key = stable_key(self, path, override)
+        value.key = value.stable_key .. "|" .. directory_signature(path)
+        if self._zen_prepared_item_table and self._zen_prepared_item_table.path == path then
+            self._zen_prepared_item_table = nil
+        end
+        put_cached(path, value)
+        put_persisted(self, path, value)
+        local FolderCover = package.loaded["modules/filebrowser/folder_cover"]
+        if FolderCover and type(FolderCover.clear) == "function" then
+            FolderCover.clear(path)
+        end
+        logger.measure("File list edited", 0, "path=", path, "items=", #edited)
+        return "updated"
+    end
+
+    -- The folder a path is in ("/" for one at the root), or nil.
+    local function parent_dir(path)
+        local parent = type(path) == "string" and path:match("^(.*)/[^/]*$")
+        if parent == "" then return "/" end
+        return parent or nil
+    end
+
+    -- True when folder is dir or a folder above it (whose listing counts its
+    -- books, or shows them in flat view).
+    local function at_or_above(folder, dir)
+        if folder == dir then return true end
+        if folder == "/" then return dir:sub(1, 1) == "/" end
+        return dir:sub(1, #folder + 1) == folder .. "/"
+    end
+
+    -- True when KOReader's listing shows a file of this name.
+    local function file_listed(self, name, path)
+        if not FileChooser.show_hidden and name:sub(1, 1) == "." then return false end
+        if name:sub(1, 2) == "._" then return false end
+        if type(self.show_file) ~= "function" then return true end
+        local ok, shown = pcall(self.show_file, self, name, path)
+        return ok and shown == true
+    end
+
+    -- True when a flat listing of folder goes down into dir: KOReader's scan
+    -- skips hidden and excluded folders on the way.
+    local function folders_listed(self, folder, dir)
+        if folder == dir then return true end
+        local rest = folder == "/" and dir:sub(2) or dir:sub(#folder + 2)
+        for name in rest:gmatch("[^/]+") do
+            if not FileChooser.show_hidden and name:sub(1, 1) == "." then return false end
+            if type(self.show_dir) == "function" then
+                local ok, shown = pcall(self.show_dir, self, name)
+                if not (ok and shown) then return false end
+            end
+        end
+        return true
+    end
+
+    -- Where item goes in a sorted listing (as KOReader's genItemTable sorts
+    -- it: files after folders unless mixed), or nil when it can't tell.
+    local function sorted_position(self, items, item, sort)
+        local mixed = sort.collate.can_collate_mixed and G_reader_settings:isTrue("collate_mixed")
+        local saved = rawget(self, "_zen_sort_override")
+        self._zen_sort_override = type(sort.override) == "table" and sort.override or nil
+        local ok, sorting = pcall(self.getSortingFunction, self, sort.collate, sort.reverse)
+        self._zen_sort_override = saved
+        if not ok or type(sorting) ~= "function" then return nil end
+        for index, other in ipairs(items) do
+            if not is_special_item(other)
+                    and (mixed or not (other.attr and other.attr.mode == "directory")) then
+                local ok_compare, before = pcall(sorting, item, other)
+                if not ok_compare then return nil end
+                if before then return index end
+            end
+        end
+        return #items + 1
+    end
+
+    --- A book moved from old_path to new_path (see BookSources.moved): the
+    -- cached listings that show it, or should, are edited and kept (see
+    -- _zen_update_item_table). Returns path -> "updated" or "dropped".
+    function FileChooser:_zen_move_in_item_tables(old_path, new_path)
+        local results = {}
+        local old_dir, new_dir = parent_dir(old_path), parent_dir(new_path)
+        if not (old_dir and new_dir) or self._dummy or self.name ~= "filemanager" then
+            return results
+        end
+        local affected = { [old_dir] = true, [new_dir] = true }
+        local name = new_path:match("([^/]+)$")
+        local attr = lfs.attributes(new_path)
+        local is_file = type(attr) == "table" and attr.mode == "file"
+        local listed = is_file and file_listed(self, name, new_path)
+
+        local candidates, seen = {}, {}
+        local function add(path)
+            if type(path) == "string" and not seen[path] then
+                seen[path] = true
+                candidates[#candidates + 1] = path
+            end
+        end
+        for _i, path in ipairs(shared_cache.order) do add(path) end
+        for _i, path in ipairs(pending.order) do add(path) end
+        add(old_dir)
+        add(new_dir)
+
+        for _i, listing in ipairs(candidates) do
+            results[listing] = self:_zen_update_item_table(listing, function(items, sort)
+                -- An entry already at new_path (a file replaced) is made again.
+                local found = false
+                for index = #items, 1, -1 do
+                    local path = items[index].path
+                    if path == old_path or path == new_path then
+                        table.remove(items, index)
+                        found = true
+                    end
+                end
+                local belongs = new_dir == listing or (sort.recursive
+                    and at_or_above(listing, new_dir) and folders_listed(self, listing, new_dir))
+                -- Not a file (a source's own path?): nothing to list it with.
+                if belongs and not is_file then return false end
+                if not found and not (belongs and listed) then return nil end
+                if belongs and listed then
+                    local item = self:getListItem(new_dir, name, new_path, attr, sort.collate)
+                    -- Sorting by last read reorders the whole listing afterwards.
+                    local index = sort.collate_mode == "access" and #items + 1
+                        or sorted_position(self, items, item, sort)
+                    if not index then return false end
+                    table.insert(items, index, item)
+                end
+                return items
+            end, affected)
+        end
+        return results
+    end
+
+    if ok_sources and type(BookSources.onMoved) == "function" then
+        BookSources.onMoved(function(old_path, new_path)
+            local FileManager = package.loaded["apps/filemanager/filemanager"]
+            local chooser = type(FileManager) == "table" and FileManager.instance
+                and FileManager.instance.file_chooser
+            local dirs = { parent_dir(old_path), parent_dir(new_path) }
+            if not (chooser and chooser.name == "filemanager") then
+                -- No file browser to list the book with: rebuilt when next listed.
+                for _i, dir in ipairs(dirs) do
+                    FileChooser._zen_invalidate_item_table_path(FileChooser, dir)
+                end
+                return
+            end
+            chooser:_zen_move_in_item_tables(old_path, new_path)
+            -- Redrawn after the other views have the new path: a redraw
+            -- while a group view's book was being deleted takes the old one
+            -- out of them.
+            local UIManager = require("ui/uimanager")
+            UIManager:nextTick(function()
+                local current = FileManager.instance and FileManager.instance.file_chooser
+                if current ~= chooser then return end
+                local shown = type(chooser.path) == "string" and strip_trailing_slashes(chooser.path)
+                for _i, dir in ipairs(dirs) do
+                    if shown and dir and at_or_above(shown, dir) then
+                        chooser:refreshPath()
+                        return
+                    end
+                end
+            end)
+        end)
     end
 
     local function patch_coverbrowser(coverbrowser)
