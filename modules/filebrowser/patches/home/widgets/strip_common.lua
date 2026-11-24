@@ -23,6 +23,7 @@ local Font = require("ui/font")
 local Device = require("device")
 local MemoryPolicy = require("common/memory_policy")
 local utils = require("common/utils")
+local SourceBadge = require("common/source_badge")
 local WidgetResources = require("common/widget_resources")
 local BookOpenTap = require("common/book_open_tap")
 local ButtonModel = require("common/nav_button_model")
@@ -352,7 +353,12 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
         if dim_finished then
             bb:lightenRect(x + border, y + border, cov_w, cov_h, 0.4)
         end
-        if not show_badges then return end
+        -- A book source's badge (bottom-right), shown with or without ZenOS's own.
+        local source_badge = SourceBadge.get(book.path)
+        if not show_badges then
+            if source_badge then SourceBadge.paint(bb, source_badge, x, y, d.w, d.h, config) end
+            return
+        end
 
         local badge_col   = utils.getBadgeColor(config)
         local badge_fg    = utils.getBadgeTextColor(config)
@@ -474,7 +480,13 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
         end
 
         -- series: bottom-right circle
-        if show_series then
+        -- Beside a source badge, moved left of it; left out on a cover too
+        -- small for both.
+        local series_shift = 0
+        if show_series and source_badge then
+            series_shift = SourceBadge.shift(d.w, d.h, config, math.floor(base_sz / 2))
+        end
+        if show_series and series_shift then
             local series_idx = tonumber(book.series_index)
             if series_idx and series_idx > 0 then
                 local idx_str
@@ -525,7 +537,7 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
                     _cached_series_dark = is_dark
                 end
                 local inset = utils.getBadgeInset(r)
-                local cx = x + d.w - r - inset
+                local cx = x + d.w - r - inset - series_shift
                 local cy = y + d.h - r - inset
                 paintCircle(bb, cx, cy, r + 2, outline)
                 paintCircle(bb, cx, cy, r,     badge_col)
@@ -543,6 +555,8 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
                 span, band_thick, _("New"), font_size, badge_col, badge_fg
             )
         end
+
+        if source_badge then SourceBadge.paint(bb, source_badge, x, y, d.w, d.h, config) end
     end
 end
 
@@ -1041,7 +1055,8 @@ function M.build_strip(ctx, source_key)
                         {
                             border = cover_common.BORDER_SIZE,
                             background = Blitbuffer.COLOR_LIGHT_GRAY,
-                            decorate = decorate_covers and function(frame)
+                            decorate = (decorate_covers or SourceBadge.get(book.path))
+                                and function(frame)
                                 apply_strip_cover_decorations(
                                     frame, book, strip_config, show_badges)
                             end or nil,
