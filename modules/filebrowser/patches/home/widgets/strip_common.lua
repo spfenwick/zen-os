@@ -24,6 +24,7 @@ local Font = require("ui/font")
 local Device = require("device")
 local MemoryPolicy = require("common/memory_policy")
 local utils = require("common/utils")
+local SourceBadge = require("common/source_badge")
 local WidgetResources = require("common/widget_resources")
 local BookOpenTap = require("common/book_open_tap")
 local ButtonModel = require("common/nav_button_model")
@@ -353,7 +354,10 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
         if dim_finished then
             bb:lightenRect(x + border, y + border, cov_w, cov_h, 0.4)
         end
+        -- A book source's badge (bottom-right) is one of the strip's badges:
+        -- shown only with them.
         if not show_badges then return end
+        local source_badge = SourceBadge.get(book.path)
 
         local badge_col   = utils.getBadgeColor(config)
         local badge_fg    = utils.getBadgeTextColor(config)
@@ -447,6 +451,7 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
         end
 
         -- page count: bottom-left pill
+        local pages_reach -- how far it reaches from the cover's left edge
         local pages = tonumber(book.stable_pages) or tonumber(book.pages)
         if show_pages and pages and pages > 0 then
             local page_str = utils.formatPageCount(pages)
@@ -468,11 +473,19 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
             paintPill(bb, bx - 2, by - 2, bw + 4, bh + 4, outline)
             paintPill(bb, bx,     by,     bw,     bh,     badge_col)
             utils.paintBadgeText(bb, _cached_pages_tw, bx + bw / 2, by + bh / 2)
+            pages_reach = bx + bw + 2 - x
         end
 
-        -- series: bottom-right circle
+        -- series: bottom-right circle. A source badge moves left of it, clear
+        -- of the page count; it's left out when there's no room.
+        local source_shift
+        local series_idx = show_series and tonumber(book.series_index)
+        if source_badge then
+            local series_radius = series_idx and series_idx > 0 and math.floor(base_sz / 2) or nil
+            source_shift = SourceBadge.shift(d.w, d.h, config, series_radius, pages_reach)
+            if not source_shift then source_badge = nil end
+        end
         if show_series then
-            local series_idx = tonumber(book.series_index)
             if series_idx and series_idx > 0 then
                 local idx_str
                 if series_idx == math.floor(series_idx) then
@@ -538,6 +551,10 @@ local function apply_strip_cover_decorations(frame, book, config, show_badges)
                 bb, x, x + d.w, y, d.h,
                 span, band_thick, _("New"), font_size, badge_col, badge_fg
             )
+        end
+
+        if source_badge then
+            SourceBadge.paint(bb, source_badge, x, y, d.w, d.h, config, source_shift)
         end
     end
 end
