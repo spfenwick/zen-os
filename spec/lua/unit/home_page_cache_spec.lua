@@ -1853,6 +1853,65 @@ describe("home data and book caches", function()
         assert.are.equal(1, resumes)
     end)
 
+    it("refreshes Home once on the next tick when book sources report changes", function()
+        local Home = get_home_module(require("modules/filebrowser/patches/home_page"))
+        local UIManager = require("ui/uimanager")
+        local ticks, resumes = {}, 0
+        local orig_next_tick = UIManager.nextTick
+        finally(function() UIManager.nextTick = orig_next_tick end)
+        UIManager.nextTick = function(_self, callback) ticks[#ticks + 1] = callback end
+        local menu = {
+            _home_rebuild = function() error("refreshes through resume") end,
+            _zen_home_resume = function(self)
+                resumes = resumes + 1
+                self._zen_home_needs_rebuild = nil
+                return true, "rebuilt"
+            end,
+        }
+        set_home_menu(Home, menu)
+        UIManager._window_stack = { { widget = menu } }
+
+        Home.sourcesChanged({ "/cloud/a.epub" }, false)
+        Home.sourcesChanged(nil, true)
+        assert.is_true(menu._zen_home_needs_rebuild)
+        assert.are.equal(0, resumes)
+        assert.are.equal(1, #ticks)
+        ticks[1]()
+        assert.are.equal(1, resumes)
+        -- Scheduled again after the refresh.
+        Home.sourcesChanged()
+        assert.are.equal(2, #ticks)
+    end)
+
+    it("leaves Home's refresh for when it's shown again after book sources change", function()
+        local Home = get_home_module(require("modules/filebrowser/patches/home_page"))
+        local UIManager = require("ui/uimanager")
+        local menu = {
+            _home_rebuild = function() error("Home is hidden") end,
+            _zen_home_resume = function() error("Home is hidden") end,
+        }
+        local dialog = {}
+        set_home_menu(Home, menu)
+        UIManager._window_stack = { { widget = menu }, { widget = dialog } }
+
+        Home.sourcesChanged({ "/cloud/a.epub" }, true)
+        assert.is_true(menu._zen_home_needs_rebuild)
+        -- Resumed when the dialog closes.
+        assert.is_true(menu._zen_home_needs_repaint)
+    end)
+
+    it("registers with the book sources, which tell whether Home is on top", function()
+        local Home = get_home_module(require("modules/filebrowser/patches/home_page"))
+        local UIManager = require("ui/uimanager")
+        local BookSources = require("common/book_sources")
+        local menu = {}
+        set_home_menu(Home, menu)
+        UIManager._window_stack = { { widget = menu } }
+        assert.is_true(BookSources.isHomeOnTop())
+        UIManager._window_stack = { { widget = menu }, { widget = {} } }
+        assert.is_false(BookSources.isHomeOnTop())
+    end)
+
     it("declines tag-strip navigation when Home has no book strip", function()
         local Home = get_home_module(require("modules/filebrowser/patches/home_page"))
         set_home_menu(Home, { _zen_home_has_strip = false })
