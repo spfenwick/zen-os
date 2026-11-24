@@ -300,6 +300,7 @@ local defaults = {
         show_mosaic_progress = true,
         show_native_progress_bar = false,
         show_new_banner = true,
+        show_source_badge = true,
         badge_size = "normal",
         badge_opacity = 100,
         dim_finished_books = false,

@@ -36,6 +36,7 @@ local function apply_browser_list_item_layout()
     local library_font = require("modules/filebrowser/patches/library_font")
     local util = require("util")
     local zen_utils = require("common/utils")
+    local SourceBadge = require("common/source_badge")
     local _ = require("gettext")
 
     local Screen = Device.screen
@@ -848,6 +849,15 @@ local function apply_browser_list_item_layout()
                     if width > 0 and height > 0 then
                         bb:lightenRect(frame.dimen.x + border, frame.dimen.y + border,
                             width, height, 0.4)
+                    end
+                end
+                -- A book source's badge on the cover.
+                if self.do_cover_image and frame and frame.dimen and entry
+                        and FolderCover.isBook(entry) then
+                    local source_badge = SourceBadge.get(entry.path, config)
+                    if source_badge then
+                        SourceBadge.paint(bb, source_badge, frame.dimen.x, frame.dimen.y,
+                            frame.dimen.w, frame.dimen.h, config)
                     end
                 end
                 if is_selected(entry) then

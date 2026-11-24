@@ -658,6 +658,22 @@ function M.build(ctx)
                         end,
                     },
                     {
+                        text = _("Show book source badges"),
+                        help_text = _("Badges that plugins giving ZenOS books (such as a cloud library) put on their books' covers, in the library, on Home and in the book switcher."),
+                        checked_func = function()
+                            return require("common/source_badge").enabled(config)
+                        end,
+                        callback = function()
+                            if type(config.browser_cover_badges) ~= "table" then
+                                config.browser_cover_badges = {}
+                            end
+                            config.browser_cover_badges.show_source_badge =
+                                not require("common/source_badge").enabled(config)
+                            plugin:saveConfig()
+                            UIManager:setDirty(nil, getFullRefreshMode())
+                        end,
+                    },
+                    {
                         text = _("Show new banner"),
                         checked_func = function()
                             return type(config.browser_cover_badges) == "table"
