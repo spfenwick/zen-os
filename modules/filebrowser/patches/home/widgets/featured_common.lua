@@ -16,6 +16,7 @@ local GestureRange = require("ui/gesturerange")
 local Device = require("device")
 local util = require("util")
 local zen_utils = require("common/utils")
+local SourceBadge = require("common/source_badge")
 local WidgetResources = require("common/widget_resources")
 local BookOpenTap = require("common/book_open_tap")
 local BookProgress = require("common/ui/book_progress")
@@ -264,7 +265,10 @@ function M.build(ctx, source_key)
 
     cover_widget, cover_w, cover_actual_h = cover_common.make_cover_widget(
         book, cover_max_w, col_h,
-        { border = cover_common.BORDER_SIZE, background = Blitbuffer.COLOR_LIGHT_GRAY }
+        { border = cover_common.BORDER_SIZE, background = Blitbuffer.COLOR_LIGHT_GRAY,
+          -- A book source's badge, asked for at each paint; ZenOS's own
+          -- badges aren't shown here.
+          decorate = function(frame) SourceBadge.decorate(frame, book.path) end }
     )
     local cover_col_w = math.max(1, cover_w or cover_max_w)
     gap = math.min(gap, math.max(0, width - cover_col_w - 1))
