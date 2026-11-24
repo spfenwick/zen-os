@@ -94,12 +94,14 @@
 -- or history change: they are read again, groupings are kept. Either one
 -- refreshes ZenOS's open views (Home, the file browser, Authors, Series,
 -- Languages, Tags and their book lists, To Be Read): those shown at once,
--- Home else when it's next shown. A plugin that changes this device's reading history (ReadHistory), for
--- example by syncing books read elsewhere into it, calls
--- historyChanged(paths) so Home shows the new order. isHomeOnTop() tells
--- whether Home is the page shown. A source that errors is skipped; the
--- views keep working. Books whose path db_bookinfo already lists are not
--- added again.
+-- Home else when it's next shown. Call moved(old_path, new_path) when a
+-- book's path changes (a catalog book downloaded to a file, a file
+-- renamed): open views list it at its new path. A plugin that changes
+-- this device's reading history (ReadHistory), for example by syncing
+-- books read elsewhere into it, calls historyChanged(paths) so Home shows
+-- the new order. isHomeOnTop() tells whether Home is the page shown. A
+-- source that errors is skipped; the views keep working. Books whose path
+-- db_bookinfo already lists are not added again.
 
 local logger = require("common/zen_logger").new("book_sources")
 
@@ -203,6 +205,38 @@ function M.changed(paths)
     revision = revision + 1
     if type(paths) == "table" then drop_cached_covers(paths) end
     notify(paths, "books")
+end
+
+local move_listeners = {}
+
+--- For ZenOS's views: listener(old_path, new_path) is called by moved().
+function M.onMoved(listener)
+    if type(listener) == "function" then move_listeners[#move_listeners + 1] = listener end
+end
+
+--- A source's book moved from old_path to new_path: a catalog book was
+-- downloaded to a file, or a file was renamed or moved to another folder.
+-- Call it once the file is in place and the source's books(), owns() and
+-- listingKey() give the book at its new path. Does what changed({ old_path,
+-- new_path }) does, and a selected book stays selected: open views (the
+-- file browser, Authors, Series, Languages, Tags and their book lists, To
+-- Be Read, history, collections and search lists) list the book at new_path, and the file browser is
+-- redrawn when it shows either folder (or a folder above them). new_path
+-- may have no file (a downloaded book deleted, listed by its source
+-- again). Returns true when the paths were valid.
+function M.moved(old_path, new_path)
+    if type(old_path) ~= "string" or old_path == "" or type(new_path) ~= "string"
+            or new_path == "" or old_path == new_path then
+        return false
+    end
+    -- Move listeners first: what they carry over (a selection) is in place
+    -- when the views rebuild.
+    for _i, listener in ipairs(move_listeners) do
+        local ok, err = pcall(listener, old_path, new_path)
+        if not ok then logger.warn("book move listener failed", err) end
+    end
+    M.changed({ old_path, new_path })
+    return true
 end
 
 --- Changes whenever a source is registered, removed or reports a change.

@@ -1046,6 +1046,52 @@ local function sources_changed()
     end)
 end
 
+-- Points a list item at new_path. True if it listed old_path.
+local function swap_in_item(item, old_path, new_path)
+    if type(item) ~= "table" then return false end
+    local found = false
+    for _i, key in ipairs({ "path", "filepath", "file" }) do
+        if item[key] == old_path then item[key], found = new_path, true end
+    end
+    local function stem(path)
+        return ((path:match("([^/]+)$") or path):gsub("%.[^%.]+$", ""))
+    end
+    if found and item.text == stem(old_path) then item.text = stem(new_path) end
+    return found
+end
+
+-- A book moved (BookSources.moved). moved() also reports the change, so
+-- ZenOS's group views, their book lists and To Be Read are rebuilt by
+-- sources_changed. Here: a selected book stays selected under its new path,
+-- and other open lists (history, collections, search results...), which
+-- aren't rebuilt from sources, list it at new_path. The file browser's own
+-- listing is updated by browser_item_table_cache.
+local function replace_file(old_path, new_path)
+    local UIManager = require("ui/uimanager")
+    local FileManager = package.loaded["apps/filemanager/filemanager"]
+    local selected = type(FileManager) == "table" and FileManager.instance
+        and FileManager.instance.selected_files
+    if type(selected) == "table" and selected[old_path] ~= nil then
+        selected[new_path], selected[old_path] = selected[old_path], nil
+    end
+    local own = {}
+    for _i, menu in ipairs({ _authors_menu or false, _series_menu or false,
+            _languages_menu or false, _tags_menu or false, _tbr_menu or false }) do
+        if menu then own[menu] = true end
+    end
+    for _i, menu in ipairs(_detail_menus) do own[menu] = true end
+    for _i, entry in ipairs(UIManager._window_stack or {}) do
+        local widget = entry.widget
+        if type(widget) == "table" and not own[widget] and type(widget.item_table) == "table" then
+            local found = false
+            for _j, item in ipairs(widget.item_table) do
+                if swap_in_item(item, old_path, new_path) then found = true end
+            end
+            if found and type(widget.updateItems) == "function" then widget:updateItems() end
+        end
+    end
+end
+
 -------------------------------------------------------------------------------
 -- Refresh library data after deletion, or redraw after a status change.
 -- One-shot wrapper: restores the original after first call or on next refresh.
@@ -2026,6 +2072,9 @@ SharedState.registerLoader("group_view", register_group_view_api)
 local ok_sources, BookSources = pcall(require, "common/book_sources")
 if ok_sources and type(BookSources) == "table" and type(BookSources.onChanged) == "function" then
     BookSources.onChanged(sources_changed)
+end
+if ok_sources and type(BookSources) == "table" and type(BookSources.onMoved) == "function" then
+    BookSources.onMoved(replace_file)
 end
 
 return function()

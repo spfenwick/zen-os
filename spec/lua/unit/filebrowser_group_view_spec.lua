@@ -1106,6 +1106,79 @@ describe("file browser group views", function()
         assert.are.same({ "/first.epub", "/second.epub", "/third.epub" }, paths)
     end)
 
+    -- What BookSources.moved does: tell move listeners, then report the
+    -- change (ZenOS's views are rebuilt from the source, which now lists
+    -- new_path).
+    local function install_move_listeners()
+        local listeners = { changed = {}, moved = {} }
+        package.loaded["common/book_sources"] = setmetatable({
+            onChanged = function(listener) listeners.changed[#listeners.changed + 1] = listener end,
+            onMoved = function(listener) listeners.moved[#listeners.moved + 1] = listener end,
+        }, { __index = require("common/book_sources") })
+        return function(old_path, new_path)
+            for _i, listener in ipairs(listeners.moved) do listener(old_path, new_path) end
+            for _i, listener in ipairs(listeners.changed) do listener({ old_path, new_path }, "books") end
+        end, listeners
+    end
+
+    it("lists a moved book at its new path in group pages and other open lists", function()
+        local move, listeners = install_move_listeners()
+        local groups = { authors = { { author = "Ada", files = { "/cloud-1.epub", "/second.epub" } } } }
+        install_group_view(groups)
+        config.features.automatic_series_grouping = false
+        metadata["/cloud-1.epub"] = { title = "First" }
+        metadata["/First.epub"] = { title = "First" }
+        metadata["/second.epub"] = { title = "Second" }
+        api.showAuthorsView()
+        local root = assert(find_menu("authors"))
+        local detail = assert(api.restoreDetail("Ada", "authors"))
+        local history = { item_table = { { file = "/cloud-1.epub", text = "cloud-1" } }, updates = 0 }
+        function history:updateItems() self.updates = self.updates + 1 end
+        package.loaded["ui/uimanager"]._window_stack = {
+            { widget = root }, { widget = detail }, { widget = history },
+        }
+
+        assert.are.equal(1, #listeners.moved)
+        groups.authors[1].files = { "/First.epub", "/second.epub" }
+        move("/cloud-1.epub", "/First.epub")
+
+        assert.are.same({ "/First.epub", "/second.epub" }, root.item_table[1]._zen_files)
+        local detail_paths = {}
+        for _i, item in ipairs(detail.item_table) do detail_paths[#detail_paths + 1] = item.path end
+        table.sort(detail_paths)
+        assert.are.same({ "/First.epub", "/second.epub" }, detail_paths)
+        assert.are.equal("/First.epub", history.item_table[1].file)
+        assert.are.equal("First", history.item_table[1].text)
+        assert.are.equal(1, history.updates)
+    end)
+
+    it("keeps a moved book selected under its new path", function()
+        local move = install_move_listeners()
+        local groups = { authors = { { author = "Ada", files = { "/cloud-1.epub", "/second.epub" } } } }
+        install_group_view(groups)
+        config.features.automatic_series_grouping = false
+        metadata["/cloud-1.epub"] = { title = "First" }
+        metadata["/First.epub"] = { title = "First" }
+        metadata["/second.epub"] = { title = "Second" }
+        metadata["/Second.epub"] = { title = "Second" }
+        local file_manager = package.loaded["apps/filemanager/filemanager"].instance
+        file_manager.selected_files = { ["/cloud-1.epub"] = true }
+        api.showAuthorsView()
+        local detail = assert(api.restoreDetail("Ada", "authors"))
+
+        groups.authors[1].files = { "/First.epub", "/second.epub" }
+        move("/cloud-1.epub", "/First.epub")
+
+        assert.are.same({ ["/First.epub"] = true }, file_manager.selected_files)
+        local dims = {}
+        for _i, item in ipairs(detail.item_table) do dims[item.path] = item.dim end
+        assert.is_true(dims["/First.epub"])
+        -- An unselected book isn't selected by its move.
+        groups.authors[1].files = { "/First.epub", "/Second.epub" }
+        move("/second.epub", "/Second.epub")
+        assert.are.same({ ["/First.epub"] = true }, file_manager.selected_files)
+    end)
+
     it("reloads TBR books after deletion through the shared refresh hook", function()
         local files = { "/first.epub", "/second.epub" }
         install_group_view({ tbr = files })
