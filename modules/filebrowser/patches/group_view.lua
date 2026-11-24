@@ -1026,6 +1026,78 @@ local function refresh_after_delete(path)
     if _tbr_menu then _tbr_menu._zen_tbr_refresh() end
 end
 
+local function swap_in_list(list, old_path, new_path)
+    local found = false
+    for index, value in ipairs(list) do
+        if value == old_path then list[index], found = new_path, true end
+    end
+    return found
+end
+
+-- Points a list item (and the series groups and file lists in it) at
+-- new_path. True if anything changed.
+local function swap_in_item(item, old_path, new_path)
+    if type(item) ~= "table" then return false end
+    local found = false
+    for _i, key in ipairs({ "path", "filepath", "file" }) do
+        if item[key] == old_path then item[key], found = new_path, true end
+    end
+    local function stem(path)
+        return ((path:match("([^/]+)$") or path):gsub("%.[^%.]+$", ""))
+    end
+    if found and item.text == stem(old_path) then item.text = stem(new_path) end
+    -- Group items share their file list with the book list opened from them.
+    if type(item._zen_files) == "table" and swap_in_list(item._zen_files, old_path, new_path) then
+        found = true
+    end
+    if type(item.series_items) == "table" then
+        for _i, sub in ipairs(item.series_items) do
+            if swap_in_item(sub, old_path, new_path) then found = true end
+        end
+    end
+    return found
+end
+
+-- A book moved (BookSources.moved): open lists show it at its new path.
+-- ZenOS's group views, their book lists and To Be Read, then any other list
+-- (history, collections, search results...). The file browser's own
+-- listing is updated by browser_item_table_cache.
+local function replace_file(old_path, new_path)
+    local UIManager = require("ui/uimanager")
+    local done = {}
+    for _i, menu in ipairs({ _authors_menu or false, _series_menu or false,
+            _languages_menu or false, _tags_menu or false }) do
+        if menu and type(menu.item_table) == "table" then
+            done[menu] = true
+            local found = false
+            for _j, item in ipairs(menu.item_table) do
+                if swap_in_item(item, old_path, new_path) then found = true end
+            end
+            if found then menu:updateItems() end
+        end
+    end
+    for _i, menu in ipairs(_detail_menus) do
+        done[menu] = true
+        if type(menu._zen_replace_file) == "function" then
+            menu._zen_replace_file(old_path, new_path)
+        end
+    end
+    if _tbr_menu then
+        done[_tbr_menu] = true
+        _tbr_menu._zen_tbr_refresh()
+    end
+    for _i, entry in ipairs(UIManager._window_stack or {}) do
+        local widget = entry.widget
+        if type(widget) == "table" and not done[widget] and type(widget.item_table) == "table" then
+            local found = false
+            for _j, item in ipairs(widget.item_table) do
+                if swap_in_item(item, old_path, new_path) then found = true end
+            end
+            if found and type(widget.updateItems) == "function" then widget:updateItems() end
+        end
+    end
+end
+
 -------------------------------------------------------------------------------
 -- Refresh library data after deletion, or redraw after a status change.
 -- One-shot wrapper: restores the original after first call or on next refresh.
@@ -1246,6 +1318,16 @@ showDetailView = function(group_item, injectNavbar, tab_id, navbar_tab_id, opene
     table.insert(_detail_menus, detail_menu)
     detail_menu._zen_remove_file = function(path)
         remove_file(files, path)
+        detail_menu.item_table = buildItems()
+        detail_menu:updateItems()
+    end
+    detail_menu._zen_replace_file = function(old_path, new_path)
+        -- files may be a group item's list, already swapped by replace_file.
+        local found = swap_in_list(files, old_path, new_path)
+        for _i, item in ipairs(detail_menu.item_table or {}) do
+            if swap_in_item(item, old_path, new_path) then found = true end
+        end
+        if not found then return end
         detail_menu.item_table = buildItems()
         detail_menu:updateItems()
     end
@@ -1966,6 +2048,11 @@ local function register_group_view_api(zen_plugin)
 end
 
 SharedState.registerLoader("group_view", register_group_view_api)
+
+local ok_sources, BookSources = pcall(require, "common/book_sources")
+if ok_sources and type(BookSources) == "table" and type(BookSources.onMoved) == "function" then
+    BookSources.onMoved(replace_file)
+end
 
 return function()
     register_group_view_api(rawget(_G, "__ZEN_UI_PLUGIN"))
