@@ -262,6 +262,7 @@ function M.build(opts)
     local VerticalSpan = require("ui/widget/verticalspan")
     local _ = require("gettext")
     local cover_common = require("modules/filebrowser/patches/home/widgets/cover_common")
+    local SourceBadge = require("common/source_badge")
 
     local Screen = Device.screen
     local width = math.max(1, tonumber(opts.width) or Screen:getWidth())
@@ -378,6 +379,10 @@ function M.build(opts)
                 border = cover_border,
                 background = Blitbuffer.COLOR_LIGHT_GRAY,
                 uniform = render.uniform,
+                -- A book source's badge (the switcher shows none of ZenOS's own).
+                decorate = SourceBadge.get(book.path) and function(frame)
+                    SourceBadge.decorate(frame, book.path)
+                end or nil,
             })
         local lines = VerticalGroup:new{ align = "center" }
         if render.show_title then
