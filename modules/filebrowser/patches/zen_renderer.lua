@@ -48,6 +48,7 @@ local function apply_zen_renderer()
     local book_status = require("common/book_status")
     local library_font = require("modules/filebrowser/patches/library_font")
     local utils = require("common/utils")
+    local SourceBadge = require("common/source_badge")
     local now = require("common/zen_logger").now
     local METADATA_TTL_S = 30
     local background_check_second, background_config_path, background_enabled
@@ -664,11 +665,18 @@ local function apply_zen_renderer()
             y + math.floor((height - widget_size.h) / 2))
     end
 
-    local function paint_series_badge(item, bb, text, config)
+    -- beside_source: a source badge is in the corner, so it moves left of it
+    -- (or isn't shown, on a cover too small for both).
+    local function paint_series_badge(item, bb, text, config, beside_source)
         local frame = item._zen_cover_frame
         if not frame or not frame.dimen then return end
         local size = badge_size(frame, config)
         local radius = math.floor(size / 2)
+        local shift = 0
+        if beside_source then
+            shift = SourceBadge.shift(frame.dimen.w, frame.dimen.h, config, radius)
+            if not shift then return end
+        end
         local color, foreground = badge_colors(config)
         local max_size = utils.getBadgeFontSize(config, size, 0.26, 7)
         -- Reuse the fitted size; restarting from the max reshapes a widget per step every paint.
@@ -683,7 +691,7 @@ local function apply_zen_renderer()
         item._zen_series_fit = { text = text, radius = radius, max = max_size, size = font_size }
         local widget_size = widget:getSize()
         local inset = utils.getBadgeInset(radius)
-        local x = frame.dimen.x + frame.dimen.w - radius - inset
+        local x = frame.dimen.x + frame.dimen.w - radius - inset - shift
         local y = frame.dimen.y + frame.dimen.h - radius - inset
         paint_circle(bb, x, y, radius + 2, foreground)
         paint_circle(bb, x, y, radius, color)
@@ -874,7 +882,15 @@ local function apply_zen_renderer()
             paint_native_progress(self, bb, config)
             paint_progress_badge(self, bb, config)
             if self._zen_page_label then paint_page_badge(self, bb, self._zen_page_label, config) end
-            if self._zen_series_label then paint_series_badge(self, bb, self._zen_series_label, config) end
+            local frame = self._zen_cover_frame
+            local source_badge = frame and frame.dimen and SourceBadge.get(self.entry and self.entry.path)
+            if self._zen_series_label then
+                paint_series_badge(self, bb, self._zen_series_label, config, source_badge ~= nil)
+            end
+            if source_badge then
+                SourceBadge.paint(bb, source_badge, frame.dimen.x, frame.dimen.y,
+                    frame.dimen.w, frame.dimen.h, config)
+            end
         end
         if self.entry and is_file_manager_select_mode(self.entry.path) then
             local border = math.max(3, Screen:scaleBySize(3))
