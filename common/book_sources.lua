@@ -86,6 +86,21 @@
 --       -- call statusChanged() when it changes. "Remove from history"
 --       -- hides an entry until the source gives it a later time.
 --       history = function() return { ... } end,
+--       -- Optional: a badge for a book's cover, as { icon = absolute path
+--       -- of an SVG file }, or nil for no badge (and for paths it doesn't
+--       -- own). ZenOS paints the icon's dark shapes in its badge colours,
+--       -- in a circle in the cover's bottom-right corner, wherever it draws
+--       -- the book's cover: the library and group views (mosaic and list),
+--       -- Home's strips (when they show badges) and featured book, and the
+--       -- book switcher; not on group or folder covers, which show several
+--       -- books (or none). When ZenOS's series number is in that corner,
+--       -- the badge moves left of it. It never covers ZenOS's own badges
+--       -- (the series number, the page count): on a cover too small for it
+--       -- beside them, it's left out, as it is on list covers too small
+--       -- for it at full size. Asked each time a cover is painted, so keep
+--       -- it cheap; call statusChanged() when badges change. If it raises
+--       -- an error, it's logged once and not asked again until then.
+--       badge = function(path) return { icon = "/path/to/cloud.svg" } end,
 --   })
 --
 -- Call changed() when a source's books change, so cached groupings are
@@ -116,6 +131,10 @@ local status_revision = 0
 local builtins_loaded = false
 local home -- ZenOS's Home page module, once it has loaded (see setHome)
 local change_listeners = {} -- see onChanged
+-- Sources whose badge() failed: not asked again (it runs on every cover
+-- paint, so each failure would log once per cover per repaint) until the
+-- source is registered again or calls statusChanged().
+local badge_failed = {} -- id -> true
 
 local function load_builtins()
     if builtins_loaded then return end
@@ -150,6 +169,7 @@ function M.register(id, source)
     load_builtins() -- built-in sources come first
     if not sources[id] then order[#order + 1] = id end
     sources[id] = source
+    badge_failed[id] = nil
     M.changed()
     return true
 end
@@ -157,6 +177,7 @@ end
 function M.unregister(id)
     if not sources[id] then return end
     sources[id] = nil
+    badge_failed[id] = nil
     for i, other in ipairs(order) do
         if other == id then table.remove(order, i) break end
     end
@@ -215,6 +236,7 @@ end
 -- unchanged. Open views are refreshed.
 function M.statusChanged()
     status_revision = status_revision + 1
+    badge_failed = {} -- a source's badges changed: ask the ones that failed again
     notify(nil, "status")
 end
 
@@ -550,6 +572,27 @@ end
 function M.status(path)
     local known = known_status(path)
     if known and (known.status or known.percent_finished) then return known end
+end
+
+--- The cover badge from the first source that gives one for this path:
+-- { icon = path of an SVG file }, or nil (see common/source_badge.lua).
+-- A source whose badge() fails is logged once and skipped until it's
+-- registered again or calls statusChanged().
+function M.badge(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    for _i, id in ipairs(order) do
+        local source = sources[id]
+        if type(source.badge) == "function" and not badge_failed[id] then
+            local ok, result = pcall(source.badge, path)
+            if not ok then
+                badge_failed[id] = true
+                logger.warn("book source failed; its badges are off until it reports a change",
+                    id, "badge", result)
+            elseif type(result) == "table" and type(result.icon) == "string" and result.icon ~= "" then
+                return { icon = result.icon }
+            end
+        end
+    end
 end
 
 --- Star rating (1..5) from the first source that knows the book, or nil.

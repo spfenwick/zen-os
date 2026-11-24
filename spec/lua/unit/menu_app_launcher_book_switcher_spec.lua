@@ -434,6 +434,14 @@ describe("app launcher book switcher page", function()
             end,
         })
         replace("gettext", function(text) return text end)
+        local badged, badged_config = {}, nil
+        replace("common/source_badge", {
+            get = function(path) if path == "/books/two.epub" then return { icon = "/cloud.svg" } end end,
+            decorate = function(_frame, path, config)
+                badged[#badged + 1] = path
+                badged_config = config
+            end,
+        })
         rawset(_G, "__ZEN_UI_SET_OPENING_BANNER_COVER", function(cover)
             banner_cover = cover
             return true
@@ -475,6 +483,13 @@ describe("app launcher book switcher page", function()
         assert.are.equal(4, #refs.buttons)
         assert.are.equal(4, #refs.layout_rows[1])
         assert.is_false(cover_options[1].options.uniform)
+        -- Every cover asks for a book source's badge when it paints, so a
+        -- badge a source gives after the switcher was built still shows.
+        cover_options[1].options.decorate({})
+        cover_options[2].options.decorate({})
+        assert.are.same({ "/books/one.epub", "/books/two.epub" }, badged)
+        -- In the switcher's own config (its badge colours and size).
+        assert.are.equal(options.config, badged_config)
         assert.are.equal(144, refs.buttons[1].widget.width)
         assert.are.equal(140, cover_options[1].width)
         assert.are.equal(196, cover_options[1].height)
