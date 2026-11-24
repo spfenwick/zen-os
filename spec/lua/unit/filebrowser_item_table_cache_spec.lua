@@ -25,6 +25,7 @@ describe("file browser item-table cache", function()
     local source_readable
     local listing_keys
     local calibre_files
+    local move_listeners
 
     local module_names = {
         "common/cover_utils",
@@ -121,6 +122,7 @@ describe("file browser item-table cache", function()
         source_readable = {}
         listing_keys = {}
         calibre_files = {}
+        move_listeners = {}
         saved_modules = {}
         for _i, name in ipairs(module_names) do
             saved_modules[name] = package.loaded[name]
@@ -232,6 +234,7 @@ describe("file browser item-table cache", function()
         ZenSpec.replace("version", { version = "test-koreader" })
         ZenSpec.replace("common/book_sources", {
             listingKey = function(path) return listing_keys[path] or "" end,
+            onMoved = function(listener) move_listeners[#move_listeners + 1] = listener end,
         })
         _G.G_reader_settings = {
             readSetting = function(_, key, default)
@@ -467,6 +470,46 @@ describe("file browser item-table cache", function()
 
         assert.are.equal(2, generated["/library"])
         assert.are.equal(1, generated["/library/series"])
+    end)
+
+    it("redraws the file browser after the other views when a source's book moves", function()
+        local chooser = setmetatable({ name = "filemanager", path = "/library" },
+            { __index = FileChooser })
+        local redrawn = 0
+        chooser.refreshPath = function() redrawn = redrawn + 1 end
+        package.loaded["apps/filemanager/filemanager"].instance = { file_chooser = chooser }
+        local ticks = {}
+        package.loaded["ui/uimanager"].nextTick = function(_self, callback)
+            ticks[#ticks + 1] = callback
+        end
+
+        assert.are.equal(1, #move_listeners)
+        move_listeners[1]("/library/cloud-1.epub", "/library/c.epub")
+        assert.are.equal(0, redrawn)
+        ticks[1]()
+        assert.are.equal(1, redrawn)
+
+        -- A folder the book didn't leave or go to isn't redrawn.
+        chooser.path = "/other"
+        move_listeners[1]("/library/cloud-1.epub", "/library/c.epub")
+        ticks[2]()
+        assert.are.equal(1, redrawn)
+    end)
+
+    it("redraws the folder a book went to from a source path with no folder", function()
+        local chooser = setmetatable({ name = "filemanager", path = "/books" },
+            { __index = FileChooser })
+        local redrawn = 0
+        chooser.refreshPath = function() redrawn = redrawn + 1 end
+        package.loaded["apps/filemanager/filemanager"].instance = { file_chooser = chooser }
+        local ticks = {}
+        package.loaded["ui/uimanager"].nextTick = function(_self, callback)
+            ticks[#ticks + 1] = callback
+        end
+
+        move_listeners[1]("cloud:123", "/books/title.epub")
+        ticks[1]()
+        assert.are.equal(1, redrawn)
     end)
 
     it("rejects a persisted listing once its book source is gone", function()

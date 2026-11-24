@@ -55,6 +55,7 @@ describe("file browser group views", function()
         "apps/filemanager/filemanager",
         "ui/widget/filechooser",
         "ui/widget/booklist",
+        "common/book_sources",
     }
 
     local function find_menu(name)
@@ -1031,6 +1032,67 @@ describe("file browser group views", function()
 
         assert.is_true(detail.item_table[1]._zen_empty_placeholder)
         assert.is_true(find_menu("authors").item_table[1]._zen_empty_placeholder)
+    end)
+
+    it("lists a moved book at its new path in group pages and other open lists", function()
+        local listeners = {}
+        package.loaded["common/book_sources"] = setmetatable({
+            onMoved = function(listener) listeners[#listeners + 1] = listener end,
+        }, { __index = require("common/book_sources") })
+        install_group_view({
+            authors = { { author = "Ada", files = { "/cloud-1.epub", "/second.epub" } } },
+        })
+        config.features.automatic_series_grouping = false
+        metadata["/cloud-1.epub"] = { title = "First" }
+        metadata["/First.epub"] = { title = "First" }
+        metadata["/second.epub"] = { title = "Second" }
+        api.showAuthorsView()
+        local root = assert(find_menu("authors"))
+        local detail = assert(api.restoreDetail("Ada", "authors"))
+        local history = { item_table = { { file = "/cloud-1.epub", text = "cloud-1" } }, updates = 0 }
+        function history:updateItems() self.updates = self.updates + 1 end
+        package.loaded["ui/uimanager"]._window_stack = {
+            { widget = root }, { widget = detail }, { widget = history },
+        }
+
+        assert.are.equal(1, #listeners)
+        listeners[1]("/cloud-1.epub", "/First.epub")
+
+        assert.are.same({ "/First.epub", "/second.epub" }, root.item_table[1]._zen_files)
+        local detail_paths = {}
+        for _i, item in ipairs(detail.item_table) do detail_paths[#detail_paths + 1] = item.path end
+        assert.are.same({ "/First.epub", "/second.epub" }, detail_paths)
+        assert.are.equal("/First.epub", history.item_table[1].file)
+        assert.are.equal("First", history.item_table[1].text)
+        assert.are.equal(1, history.updates)
+    end)
+
+    it("keeps a moved book selected under its new path", function()
+        local listeners = {}
+        package.loaded["common/book_sources"] = setmetatable({
+            onMoved = function(listener) listeners[#listeners + 1] = listener end,
+        }, { __index = require("common/book_sources") })
+        install_group_view({
+            authors = { { author = "Ada", files = { "/cloud-1.epub", "/second.epub" } } },
+        })
+        config.features.automatic_series_grouping = false
+        metadata["/cloud-1.epub"] = { title = "First" }
+        metadata["/First.epub"] = { title = "First" }
+        metadata["/second.epub"] = { title = "Second" }
+        local file_manager = package.loaded["apps/filemanager/filemanager"].instance
+        file_manager.selected_files = { ["/cloud-1.epub"] = true }
+        api.showAuthorsView()
+        local detail = assert(api.restoreDetail("Ada", "authors"))
+
+        listeners[1]("/cloud-1.epub", "/First.epub")
+
+        assert.are.same({ ["/First.epub"] = true }, file_manager.selected_files)
+        local dims = {}
+        for _i, item in ipairs(detail.item_table) do dims[item.path] = item.dim end
+        assert.is_true(dims["/First.epub"])
+        -- An unselected book isn't selected by its move.
+        listeners[1]("/second.epub", "/Second.epub")
+        assert.are.same({ ["/First.epub"] = true }, file_manager.selected_files)
     end)
 
     it("reloads TBR books after deletion through the shared refresh hook", function()

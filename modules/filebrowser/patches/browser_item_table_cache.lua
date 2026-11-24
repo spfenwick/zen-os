@@ -1141,6 +1141,54 @@ local function apply_browser_item_table_cache()
         return result, detail
     end
 
+    -- ---- moved books (BookSources.moved) -------------------------------
+
+    -- The folder a path is in ("/" for one at the root), or nil.
+    local function parent_dir(path)
+        local parent = type(path) == "string" and path:match("^(.*)/[^/]*$")
+        if parent == "" then return "/" end
+        return parent or nil
+    end
+
+    -- True when folder is dir or a folder above it (whose listing counts its
+    -- books, or shows them in flat view).
+    local function at_or_above(folder, dir)
+        if folder == dir then return true end
+        if folder == "/" then return dir:sub(1, 1) == "/" end
+        return dir:sub(1, #folder + 1) == folder .. "/"
+    end
+
+    -- The file browser is redrawn when it shows a folder the book left or
+    -- went to: their listings no longer match, so they are scanned again.
+    if ok_sources and type(BookSources.onMoved) == "function" then
+        BookSources.onMoved(function(old_path, new_path)
+            local FileManager = package.loaded["apps/filemanager/filemanager"]
+            local chooser = type(FileManager) == "table" and FileManager.instance
+                and FileManager.instance.file_chooser
+            if not (chooser and chooser.name == "filemanager") then return end
+            -- A source's own path ("cloud:123") has no folder: skip it.
+            local dirs = {}
+            for _i, path in ipairs({ old_path, new_path }) do
+                dirs[#dirs + 1] = parent_dir(path)
+            end
+            -- Redrawn after the other views have the new path: a redraw
+            -- while a group view's book was being deleted takes the old one
+            -- out of them.
+            local UIManager = require("ui/uimanager")
+            UIManager:nextTick(function()
+                local current = FileManager.instance and FileManager.instance.file_chooser
+                if current ~= chooser then return end
+                local shown = type(chooser.path) == "string" and strip_trailing_slashes(chooser.path)
+                for _i, dir in ipairs(dirs) do
+                    if shown and dir and at_or_above(shown, dir) then
+                        chooser:refreshPath()
+                        return
+                    end
+                end
+            end)
+        end)
+    end
+
     local function patch_coverbrowser(coverbrowser)
         if not coverbrowser or coverbrowser._zen_item_table_cache_invalidation then return end
         -- Stock CoverBrowser exposes onInvalidateMetadataCache(file); onBookInfoUpdated is legacy.
