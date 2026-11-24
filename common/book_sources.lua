@@ -86,6 +86,18 @@
 --       -- call statusChanged() when it changes. "Remove from history"
 --       -- hides an entry until the source gives it a later time.
 --       history = function() return { ... } end,
+--       -- Optional: a badge for a book's cover, as { icon = absolute path
+--       -- of an SVG file }, or nil for no badge (and for paths it doesn't
+--       -- own). ZenOS paints the icon's dark shapes in its badge colours,
+--       -- in a circle in the cover's bottom-right corner, wherever it draws
+--       -- the book's cover: the library and group views (mosaic and list),
+--       -- Home's strips (when they show badges) and featured book, and the
+--       -- book switcher. When ZenOS's series number is in that corner, the
+--       -- badge moves left of it. It never covers ZenOS's own badges (the
+--       -- series number, the page count): on a cover too small for it
+--       -- beside them, it's left out. Asked each time a cover is painted, so keep it cheap; call
+--       -- statusChanged() when badges change.
+--       badge = function(path) return { icon = "/path/to/cloud.svg" } end,
 --   })
 --
 -- Call changed() when a source's books change, so cached groupings are
@@ -550,6 +562,21 @@ end
 function M.status(path)
     local known = known_status(path)
     if known and (known.status or known.percent_finished) then return known end
+end
+
+--- The cover badge from the first source that gives one for this path:
+-- { icon = path of an SVG file }, or nil (see common/source_badge.lua).
+function M.badge(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    for _i, id in ipairs(order) do
+        local source = sources[id]
+        if type(source.badge) == "function" then
+            local result = call(id, source, "badge", path)
+            if type(result) == "table" and type(result.icon) == "string" and result.icon ~= "" then
+                return { icon = result.icon }
+            end
+        end
+    end
 end
 
 --- Star rating (1..5) from the first source that knows the book, or nil.

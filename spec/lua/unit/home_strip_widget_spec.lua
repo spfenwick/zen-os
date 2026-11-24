@@ -519,6 +519,67 @@ describe("home strip widget", function()
         assert.are.equal(7, painted_series_size())
     end)
 
+    describe("book source badges", function()
+        local painted, room, shifts, asked
+        local function strip_cover(show_badges)
+            local real = package.loaded["common/source_badge"]
+            finally(function() package.loaded["common/source_badge"] = real end)
+            painted, room, shifts, asked = 0, 10, {}, nil
+            ZenSpec.replace("common/source_badge", {
+                get = function(path) if path == "/cloud.epub" then return { icon = "/cloud.svg" } end end,
+                shift = function(_w, _h, _config, series_radius, left_limit)
+                    asked = { series = series_radius, pages = left_limit }
+                    return room
+                end,
+                paint = function(_bb, _badge, _x, _y, _w, _h, _config, shift)
+                    painted = painted + 1
+                    shifts[#shifts + 1] = shift
+                end,
+            })
+            rawset(_G, "__ZEN_UI_PLUGIN", { config = {
+                browser_series_badge = { show_series_badge = true },
+                browser_page_count = { show_page_count = true },
+            } })
+            require("modules/filebrowser/patches/home/widgets/strip").build{
+                width = 600, height = 300, component_id = "strip",
+                module_cfg = { count = 3, interactive = false, show_badges = show_badges },
+                data = { getBooksForStrip = function()
+                    return {{ path = "/cloud.epub", status = "reading", series_index = 2, pages = 120 }}
+                end },
+            }
+            for _i, widget in ipairs(created) do
+                if widget.kind == "cover" then return widget end
+            end
+        end
+        local bb = { paintRect = function() end, paintRectRGB32 = function() end }
+
+        it("are left out with the strip's badges turned off", function()
+            local cover = strip_cover(false)
+            assert.is_table(cover)
+            cover:paintTo(bb, 0, 0)
+            assert.are.equal(0, painted)
+        end)
+
+        it("move left of the series number when there's room for both", function()
+            local cover = strip_cover(true)
+            cover:paintTo(bb, 0, 0)
+            assert.are.equal(1, painted)
+            assert.are.same({ 10 }, shifts)
+            assert.is_true(has_text("#2"))
+            -- Told about both of ZenOS's badges along the bottom.
+            assert.is_number(asked.series)
+            assert.is_true(asked.pages > 0)
+        end)
+
+        it("give way to the series number on a cover too small for both", function()
+            local cover = strip_cover(true)
+            room = nil
+            cover:paintTo(bb, 0, 0)
+            assert.are.equal(0, painted)
+            assert.is_true(has_text("#2"))
+        end)
+    end)
+
     it("reduces the page size when the strip is too narrow for readable covers", function()
         local requested = {}
         local Strip = require("modules/filebrowser/patches/home/widgets/strip")

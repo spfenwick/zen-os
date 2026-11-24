@@ -48,6 +48,7 @@ local function apply_zen_renderer()
     local book_status = require("common/book_status")
     local library_font = require("modules/filebrowser/patches/library_font")
     local utils = require("common/utils")
+    local SourceBadge = require("common/source_badge")
     local now = require("common/zen_logger").now
     local METADATA_TTL_S = 30
     local background_check_second, background_config_path, background_enabled
@@ -662,6 +663,8 @@ local function apply_zen_renderer()
         paint_pill(bb, x, y, width, height, color)
         widget:paintTo(bb, x + math.floor((width - widget_size.w) / 2),
             y + math.floor((height - widget_size.h) / 2))
+        -- How far it reaches from the cover's left edge, outline included.
+        return x + width + 2 - frame.dimen.x
     end
 
     local function paint_series_badge(item, bb, text, config)
@@ -873,8 +876,25 @@ local function apply_zen_renderer()
             paint_favorite_badge(self, bb, config)
             paint_native_progress(self, bb, config)
             paint_progress_badge(self, bb, config)
-            if self._zen_page_label then paint_page_badge(self, bb, self._zen_page_label, config) end
+            local pages_reach
+            if self._zen_page_label then
+                pages_reach = paint_page_badge(self, bb, self._zen_page_label, config)
+            end
             if self._zen_series_label then paint_series_badge(self, bb, self._zen_series_label, config) end
+            local frame = self._zen_cover_frame
+            local source_badge = frame and frame.dimen and SourceBadge.get(self.entry and self.entry.path)
+            if source_badge then
+                -- Left of the series number, clear of the page count; left
+                -- out when there's no room.
+                local series_radius = self._zen_series_label
+                    and math.floor(badge_size(frame, config) / 2) or nil
+                local shift = SourceBadge.shift(frame.dimen.w, frame.dimen.h, config,
+                    series_radius, pages_reach)
+                if shift then
+                    SourceBadge.paint(bb, source_badge, frame.dimen.x, frame.dimen.y,
+                        frame.dimen.w, frame.dimen.h, config, shift)
+                end
+            end
         end
         if self.entry and is_file_manager_select_mode(self.entry.path) then
             local border = math.max(3, Screen:scaleBySize(3))

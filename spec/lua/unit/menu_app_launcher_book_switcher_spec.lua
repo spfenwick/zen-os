@@ -434,6 +434,11 @@ describe("app launcher book switcher page", function()
             end,
         })
         replace("gettext", function(text) return text end)
+        local badged = {}
+        replace("common/source_badge", {
+            get = function(path) if path == "/books/two.epub" then return { icon = "/cloud.svg" } end end,
+            decorate = function(_frame, path) badged[#badged + 1] = path end,
+        })
         rawset(_G, "__ZEN_UI_SET_OPENING_BANNER_COVER", function(cover)
             banner_cover = cover
             return true
@@ -475,6 +480,10 @@ describe("app launcher book switcher page", function()
         assert.are.equal(4, #refs.buttons)
         assert.are.equal(4, #refs.layout_rows[1])
         assert.is_false(cover_options[1].options.uniform)
+        -- A book source's badge, on the covers of the books it gives one.
+        assert.is_nil(cover_options[1].options.decorate)
+        cover_options[2].options.decorate({})
+        assert.are.same({ "/books/two.epub" }, badged)
         assert.are.equal(144, refs.buttons[1].widget.width)
         assert.are.equal(140, cover_options[1].width)
         assert.are.equal(196, cover_options[1].height)
