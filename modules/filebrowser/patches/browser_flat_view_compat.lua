@@ -44,13 +44,29 @@ local function apply_browser_flat_view_compat()
         return self.show_hidden == true
     end
 
+    -- Book sources' books without a file (see BookSources.books), in every
+    -- folder scanned.
+    local function add_source_books(self, scanned, collate, files, present)
+        local BookSources = package.loaded["common/book_sources"]
+        if type(BookSources) ~= "table" or type(BookSources.addToListing) ~= "function" then return end
+        for _i, dir in ipairs(scanned) do
+            local ok, err = pcall(BookSources.addToListing, self, dir, collate, files, present)
+            if not ok then
+                require("common/zen_logger").new("browser_flat_view_compat")
+                    .warn("adding book sources' books failed", dir, err)
+            end
+        end
+    end
+
     local function scan_flat(self, path, collate, dirs, files)
         local directories = {}
         if collate then self._zen_flat_view_directories = directories end
+        local scanned, present = {}, {}
         BookWalker.walk(path, {
             include_hidden = show_hidden(self),
-            on_scan_dir = collate and function(dir, attributes)
-                directories[dir] = attributes
+            on_scan_dir = function(dir, attributes)
+                scanned[#scanned + 1] = dir
+                if collate then directories[dir] = attributes end
             end,
             on_dir = function(name)
                 if name == "koreader" then return false end
@@ -62,9 +78,11 @@ local function apply_browser_flat_view_compat()
                 if collate then
                     item = self:getListItem(parent_path, name, fullpath, attributes, collate)
                 end
+                present[fullpath] = true
                 table.insert(files, item)
             end,
         })
+        add_source_books(self, scanned, collate, files, present)
         return true -- readable; KOReader >= 2026.10 warns on falsy
     end
 
