@@ -121,16 +121,17 @@ end
 
 --- Paints badge (from get()) in the bottom-right corner of the cover at
 -- x, y (width × height), moved shift pixels left (shift(); 0 or nil: in the
--- corner). config: ZenOS's config (its badge colours and size), or nil for
--- the running plugin's.
-function M.paint(bb, badge, x, y, width, height, config, shift)
+-- corner) and lift pixels up (above a progress bar along the bottom with
+-- ZenOS's other bottom badges; 0 or nil: not moved). config: ZenOS's
+-- config (its badge colours and size), or nil for the running plugin's.
+function M.paint(bb, badge, x, y, width, height, config, shift, lift)
     if type(badge) ~= "table" or type(badge.icon) ~= "string" then return end
     if not (width and height and width > 0 and height > 0) then return end
     config = config or plugin_config()
     local r = M.radius(width, height, config)
     local inset = utils.getBadgeInset(r)
     local cx = x + width - r - inset - (shift or 0)
-    local cy = y + height - r - inset
+    local cy = y + height - r - inset - (lift or 0)
     local foreground = utils.getBadgeTextColor(config)
     utils.paintBadgeCircle(bb, cx, cy, r + 2, foreground)
     utils.paintBadgeCircle(bb, cx, cy, r, utils.getBadgeColor(config))
