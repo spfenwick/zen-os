@@ -193,4 +193,41 @@ describe("filebrowser flat view compatibility patch", function()
         assert.are.equal(1, original_calls)
         assert.is_nil(walked.path)
     end)
+    it("adds book sources' books for every folder scanned", function()
+        local real_sources = package.loaded["common/book_sources"]
+        finally(function() package.loaded["common/book_sources"] = real_sources end)
+        local calls = {}
+        ZenSpec.replace("common/book_sources", {
+            addToListing = function(_chooser, dir, collate, files, present)
+                calls[#calls + 1] = { dir = dir, collate = collate, present = present }
+                if dir == "/library/Empty" then files[#files + 1] = "source-book" end
+                if dir == "/library" then error("source failed") end
+                return 1
+            end,
+        })
+        local chooser = {
+            name = "filemanager",
+            show_dir = function() return true end,
+            show_file = function(_, name) return name:match("%.epub$") ~= nil end,
+            getListItem = function(_, _parent, _name, fullpath) return { path = fullpath } end,
+        }
+        local files = {}
+
+        FileChooser.getPathList(chooser, "/library", "natural", {}, files)
+
+        assert.are.equal(2, #calls)
+        assert.are.equal("/library", calls[1].dir)
+        assert.are.equal("/library/Empty", calls[2].dir)
+        assert.are.equal("natural", calls[1].collate)
+        -- The files found are passed as already listed.
+        assert.is_true(calls[2].present["/library/Series/Alpha.epub"])
+        assert.is_nil(calls[2].present["/library/Notes/notes.txt"])
+        assert.are.same({ { path = "/library/Series/Alpha.epub" }, "source-book" }, files)
+
+        -- Counting too (folders are scanned without collate).
+        calls, files = {}, {}
+        FileChooser.getPathList(chooser, "/library", nil, {}, files)
+        assert.are.equal(2, #calls)
+        assert.is_nil(calls[1].collate)
+    end)
 end)

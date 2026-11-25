@@ -1,7 +1,8 @@
 -- common/book_sources.lua
 -- Books that are not rows in KOReader's bookinfo cache but should still appear
 -- in the Authors, Series, Languages and Tags views (and everything built on
--- db_bookinfo: Home rows, end-of-book suggestions, detail sorting).
+-- db_bookinfo: Home rows, end-of-book suggestions, detail sorting), and,
+-- when they have no file, in their folder's file browser listing.
 --
 -- The Kindle virtual library is the built-in source. Other plugins can
 -- register their own, for example a catalog of books that are not on the
@@ -13,6 +14,20 @@
 --       -- series, series_index, language, keywords (authors and keywords
 --       -- joined with "\n", as in bookinfo). Called when db_bookinfo
 --       -- rebuilds a grouping, so return a cached list if it is costly.
+--       -- A book whose path has no file on disk also appears in its
+--       -- folder's file browser listing, as a file would: through the
+--       -- browser's filters (status included, from status()), sorted with
+--       -- the rest, counted in the folders above and shown in flat view.
+--       -- Its optional attr = { size, modification, access, change }
+--       -- stands in for the file's attributes there (the date and size
+--       -- sorts; 0 when missing). Give listingKey() too, or ZenOS's cached
+--       -- listings won't change. bookInfo() must then set cover_fetched
+--       -- for it ("Y" when there's no cover), or CoverBrowser tries to
+--       -- extract the cover from the missing file; a source that fetches
+--       -- covers itself leaves it nil while one is on its way and handles
+--       -- BookInfoManager:extractInBackground for those paths. Books with
+--       -- a file (the Kindle library's) are listed where they are, as any
+--       -- file is.
 --       books = function() return { ... } end,
 --       -- Optional: true for paths this source owns. Needed for open and
 --       -- showContextMenu, and for its books to stay in the reading history
@@ -53,9 +68,9 @@
 --       -- metadata announces it as KOReader does, with the
 --       -- InvalidateMetadataCache event naming the book.
 --       bookInfo = function(path, get_cover) return { ... } end,
---       -- Optional: for a source whose books appear in file browser
---       -- listings (it adds them itself, e.g. by wrapping
---       -- FileChooser:getList). Return a string for each folder whose
+--       -- Optional: for a source with books without a file (they appear
+--       -- in file browser listings, see books()).
+--       -- Return a string for each folder whose
 --       -- listing shows them (including parent folders that count them, or
 --       -- show them in flat view), nil for others. It goes into the key of
 --       -- ZenOS's cached listings, which are kept across restarts, so it
@@ -111,6 +126,10 @@
 -- added again.
 
 local logger = require("common/zen_logger").new("book_sources")
+
+local function is_file(path)
+    return require("libs/libkoreader-lfs").attributes(path, "mode") == "file"
+end
 
 local M = {}
 
@@ -340,7 +359,7 @@ function M.books()
                         and type(book.info) == "table" then
                     if any_edited and edited[book.file] then
                         local info = with_edits(book.file, book.info, edited)
-                        if info ~= book.info then book = { file = book.file, info = info } end
+                        if info ~= book.info then book = { file = book.file, info = info, attr = book.attr } end
                     end
                     out[#out + 1] = book
                 end
@@ -714,8 +733,13 @@ function M.installMetadataIntegration()
     if type(orig_getDocProps) == "function" then
         function BookInfoManager:getDocProps(filepath, ...)
             local info = M.bookInfo(filepath, false)
-            local props = orig_getDocProps(self, filepath, ...)
-            if not info then return props end
+            if not info then return orig_getDocProps(self, filepath, ...) end
+            -- A book without a file has no database row: skip the query
+            -- (the metadata sorts ask for every book in a listing).
+            local props
+            if is_file(filepath) then
+                props = orig_getDocProps(self, filepath, ...)
+            end
             -- A book with a CoverBrowser row (a Kindle book on disk) keeps
             -- the fields its source doesn't give.
             props = type(props) == "table" and props or {}
@@ -724,6 +748,144 @@ function M.installMetadataIntegration()
             end
             return props
         end
+    end
+    return true
+end
+
+-- ---- folder listings ---------------------------------------------------
+
+local function parent_of(path)
+    local parent = path:match("^(.*)/[^/]+$")
+    if parent == "" then return "/" end
+    return parent
+end
+
+-- The sources' books by folder, from books(), rebuilt when revision()
+-- changes (changed(), a registration, a metadata edit).
+local folder_index, folder_index_revision
+
+local function folder_books_index()
+    local rev = M.revision()
+    if folder_index and folder_index_revision == rev then return folder_index end
+    local index = {}
+    for _i, book in ipairs(M.books()) do
+        local folder = parent_of(book.file)
+        if folder then
+            local attr = type(book.attr) == "table" and book.attr or {}
+            local list = index[folder]
+            if not list then list = {}; index[folder] = list end
+            list[#list + 1] = {
+                file = book.file,
+                name = book.file:match("[^/]+$"),
+                attr = {
+                    mode = "file",
+                    size = tonumber(attr.size) or 0,
+                    modification = tonumber(attr.modification) or 0,
+                    access = tonumber(attr.access) or 0,
+                    change = tonumber(attr.change) or 0,
+                },
+                info = book.info,
+            }
+        end
+    end
+    folder_index, folder_index_revision = index, rev
+    return index
+end
+
+--- The sources' books directly in folder, in registration order:
+-- { { file, name, attr, info }, ... } (see books()). Some may have a file
+-- (addToListing skips those).
+function M.folderBooks(folder)
+    if type(folder) ~= "string" or folder == "" then return {} end
+    folder = folder ~= "/" and folder:gsub("/+$", "") or folder
+    return folder_books_index()[folder] or {}
+end
+
+-- getDocProps() fields, as an item's doc_props for a source's book: from
+-- bookInfo() (with the user's edits), else books()' info (edits included).
+local function listing_doc_props(entry)
+    local info = M.bookInfo(entry.file, false) or entry.info
+    local props = {}
+    for _i, key in ipairs(DOC_PROPS) do
+        if type(info) == "table" then props[key] = info[key] end
+    end
+    props.display_title = props.title or entry.name:gsub("%.[^.]*$", "")
+    return props
+end
+
+-- Folders whose sources' books are in a listing being built, by its files
+-- table ({ [folder] = true }): the getPathList wrapper and the flat view's
+-- scan may both add a folder's books, in either order of installation; the
+-- second adds none. Weak keys: each listing builds a new files table.
+local listed_folders = setmetatable({}, { __mode = "k" })
+
+--- Adds the sources' books without a file in folder to a listing being
+-- built by chooser (a FileChooser), as FileChooser:getPathList adds files:
+-- an item from getListItem with collate, true (counted only) without.
+-- Passed through chooser:show_file, so the browser's filters apply.
+-- present: optional set of the paths the listing found on disk; a book
+-- whose path is in it is skipped. Without it, a book whose path has a file
+-- is skipped (one stat each); with collate, the items already in files
+-- make it. A folder already added to this files table isn't added again.
+-- Returns the number added.
+function M.addToListing(chooser, folder, collate, files, present)
+    if type(folder) ~= "string" then return 0 end
+    local key = folder ~= "/" and folder:gsub("/+$", "") or folder
+    local done = listed_folders[files]
+    if done and done[key] then return 0 end
+    if not done then done = {}; listed_folders[files] = done end
+    done[key] = true
+    local entries = M.folderBooks(folder)
+    if #entries == 0 then return 0 end
+    if collate and not present then
+        present = {}
+        for _i, item in ipairs(files) do
+            if type(item) == "table" and type(item.path) == "string" then present[item.path] = true end
+        end
+    end
+    local added = 0
+    for _i, entry in ipairs(entries) do
+        local listed
+        if present then listed = present[entry.file] else listed = is_file(entry.file) end
+        if not listed
+                and (type(chooser.show_file) ~= "function" or chooser:show_file(entry.name, entry.file)) then
+            local item = true
+            if collate then
+                item = chooser:getListItem(folder, entry.name, entry.file, entry.attr, collate)
+                if type(item) == "table" and type(item.doc_props) ~= "table" then
+                    -- ZenOS's series grouping reads doc_props, and finds no
+                    -- database row for a book without a file.
+                    item.doc_props = listing_doc_props(entry)
+                end
+            end
+            if present then present[entry.file] = true end
+            files[#files + 1] = item
+            added = added + 1
+        end
+    end
+    return added
+end
+
+--- Lists the sources' books without a file in the file browser's folders:
+-- wraps FileChooser:getPathList, which builds a folder's listing and counts
+-- the folders inside it. ZenOS's flat view adds them to its own scan;
+-- addToListing keeps a folder from being added twice, whichever wrapper is
+-- installed first. Only the file browser's chooser, not PathChooser.
+function M.installListingIntegration()
+    local ok, FileChooser = pcall(require, "ui/widget/filechooser")
+    if not ok or type(FileChooser) ~= "table" or type(FileChooser.getPathList) ~= "function" then
+        return false
+    end
+    if FileChooser._zen_book_sources_listing then return true end
+    FileChooser._zen_book_sources_listing = true
+    local orig_getPathList = FileChooser.getPathList
+    FileChooser.getPathList = function(self, path, collate, dirs, files, ...)
+        local readable = orig_getPathList(self, path, collate, dirs, files, ...)
+        if self.name == "filemanager" and type(path) == "string" and type(files) == "table" then
+            local added_ok, err = pcall(M.addToListing, self, path, collate, files)
+            if not added_ok then logger.warn("adding book sources' books to a listing failed", err) end
+        end
+        return readable
     end
     return true
 end
