@@ -83,6 +83,15 @@ local function elapsed_ms(started_at)
     return (now() - started_at) * 1000
 end
 
+-- The book sources' key for path's listing (their books without a file
+-- there changed when it does).
+local function source_listing_key(path)
+    local BookSources = package.loaded["common/book_sources"]
+    if type(BookSources) ~= "table" or type(BookSources.listingKey) ~= "function" then return "" end
+    local ok, key = pcall(BookSources.listingKey, path)
+    return ok and tostring(key) or ""
+end
+
 local function descriptor_key(menu, path)
     local settings = rawget(_G, "G_reader_settings")
     local collate, reverse = sort_policy(menu, path)
@@ -97,6 +106,7 @@ local function descriptor_key(menu, path)
         tostring(history_generation),
         tostring(menu and menu.show_hidden),
         tostring(menu and menu.show_filter and menu.show_filter.status),
+        source_listing_key(path),
     }, "\30")
 end
 
@@ -224,6 +234,21 @@ local function visible_book(menu, path, name, needs_attributes)
     return fullpath, attr
 end
 
+-- Book sources' books without a file in path that menu shows (see
+-- BookSources.visibleFolderBooks), with a known book extension as
+-- visible_book wants. present: the paths found on disk there.
+local function source_books(menu, path, present)
+    local BookSources = package.loaded["common/book_sources"]
+    if type(BookSources) ~= "table" or type(BookSources.visibleFolderBooks) ~= "function" then return {} end
+    local ok, entries = pcall(BookSources.visibleFolderBooks, menu, path, present)
+    if not ok or type(entries) ~= "table" then return {} end
+    local out = {}
+    for _i, entry in ipairs(entries) do
+        if DOC_EXTENSIONS[entry.name:lower():match("%.([^%.]+)$")] then out[#out + 1] = entry end
+    end
+    return out
+end
+
 local function scan_descriptor(menu, path, max_covers, fallback_count, allow_expensive)
     local status_filter = menu and menu.show_filter and menu.show_filter.status
     local count_known = not status_filter and type(fallback_count) == "number"
@@ -242,26 +267,34 @@ local function scan_descriptor(menu, path, max_covers, fallback_count, allow_exp
     local exact = true
     local needs_attributes = collate_id == "access" or collate_id == "date"
         or collate_id == "size"
+    local present = {}
+    local function consider(fullpath, name, attr)
+        if not count_known then count = count + 1 end
+        if METADATA_COLLATES[collate_id] and metadata == nil then
+            metadata = sort_metadata(path)
+        end
+        local candidate = {
+            is_file = true,
+            file = fullpath,
+            path = fullpath,
+            text = name,
+            attr = attr,
+        }
+        if not prepare_candidate(menu, candidate, collate_id, collate,
+                metadata or {}, history, allow_expensive) then
+            exact = false
+        end
+        retain_candidate(candidates, candidate, target, less)
+    end
     for name in iter, dir_obj do
         local fullpath, attr = visible_book(menu, path, name, needs_attributes)
         if fullpath then
-            if not count_known then count = count + 1 end
-            if METADATA_COLLATES[collate_id] and metadata == nil then
-                metadata = sort_metadata(path)
-            end
-            local candidate = {
-                is_file = true,
-                file = fullpath,
-                path = fullpath,
-                text = name,
-                attr = attr,
-            }
-            if not prepare_candidate(menu, candidate, collate_id, collate,
-                    metadata or {}, history, allow_expensive) then
-                exact = false
-            end
-            retain_candidate(candidates, candidate, target, less)
+            present[fullpath] = true
+            consider(fullpath, name, attr)
         end
+    end
+    for _i, entry in ipairs(source_books(menu, path, present)) do
+        consider(entry.file, entry.name, entry.attr)
     end
     return { count = count, entries = candidates, exact = exact }
 end
@@ -448,12 +481,20 @@ local function scan_all_finished(menu, path)
     local needs_attributes = collate_id == "access" or collate_id == "date"
         or collate_id == "size"
     local seen = 0
+    local present = {}
     for name in iter, dir_obj do
         local book = visible_book(menu, path, name, needs_attributes)
         if book then
             seen = seen + 1
+            present[book] = true
             if member_status({ path = book }) ~= "complete" then return false end
         end
+    end
+    -- Book sources' books without a file count too (their status from
+    -- the source).
+    for _i, entry in ipairs(source_books(menu, path, present)) do
+        seen = seen + 1
+        if member_status({ path = entry.file }) ~= "complete" then return false end
     end
     return seen > 0
 end

@@ -526,6 +526,75 @@ describe("shared folder cover provider", function()
         assert.is_false(FolderCover.allBooksFinished({}, entry, {}, 0))
     end)
 
+    describe("with book sources' books without a file", function()
+        local real_sources, asked
+
+        before_each(function()
+            real_sources = package.loaded["common/book_sources"]
+            asked = {}
+            ZenSpec.replace("common/book_sources", {
+                listingKey = function() return "catalog-1" end,
+                visibleFolderBooks = function(menu, path, present)
+                    asked[#asked + 1] = { menu = menu, path = path, present = present }
+                    if path ~= "/library/folder" then return {} end
+                    local out = {}
+                    for _i, name in ipairs({ "a.epub", "cloud.epub", "notes.bin" }) do
+                        local file = path .. "/" .. name
+                        if not present[file] then
+                            out[#out + 1] = { file = file, name = name,
+                                attr = { mode = "file", size = 1, modification = 5, access = 5 } }
+                        end
+                    end
+                    return out
+                end,
+            })
+        end)
+
+        after_each(function()
+            package.loaded["common/book_sources"] = real_sources
+        end)
+
+        it("counts them and uses them as cover candidates", function()
+            install_lfs(function() return { { name = "a.epub" } } end)
+            local FolderCover = require("modules/filebrowser/folder_cover")
+            local menu = { name = "filemanager", show_filter = { status = { new = true } } }
+            local result = FolderCover.build(menu, {
+                path = "/library/folder",
+                attr = { mode = "directory" },
+            }, "Folder", 80, 120)
+
+            -- The file on disk, and the source's book (not the one with a
+            -- file, nor one without a book extension).
+            assert.are.equal(2, result.count)
+            local paths = {}
+            for _i, entry in ipairs(result.entries) do paths[entry.path] = true end
+            assert.is_true(paths["/library/folder/cloud.epub"])
+            assert.is_true(asked[1].present["/library/folder/a.epub"])
+            assert.are.equal(menu, asked[1].menu)
+        end)
+
+        it("doesn't mark a folder finished while one of them isn't", function()
+            local statuses = {
+                ["/library/folder/a.epub"] = "complete",
+                ["/library/folder/cloud.epub"] = "reading",
+            }
+            ZenSpec.replace("common/book_status", {
+                getEffectiveStatus = function(status) return status end,
+                getEffectiveStatusFromFile = function(path) return statuses[path] end,
+                revision = function() return 0 end,
+            })
+            install_lfs(function() return { { name = "a.epub" } } end)
+            local FolderCover = require("modules/filebrowser/folder_cover")
+            local entry = { path = "/library/folder", attr = { mode = "directory" } }
+            assert.is_false(FolderCover.allBooksFinished({}, entry, {}, 2))
+
+            statuses["/library/folder/cloud.epub"] = "complete"
+            ZenSpec.unload("modules/filebrowser/folder_cover")
+            FolderCover = require("modules/filebrowser/folder_cover")
+            assert.is_true(FolderCover.allBooksFinished({}, entry, {}, 2))
+        end)
+    end)
+
     it("checks finished physical folders in one walk without sorting every book", function()
         local books = {}
         for index = 1, 1000 do
