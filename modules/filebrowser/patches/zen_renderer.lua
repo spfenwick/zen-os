@@ -647,7 +647,8 @@ local function apply_zen_renderer()
         return cached.widget
     end
 
-    local function paint_page_badge(item, bb, text, config)
+    -- lift: how far above its usual place it goes (bottom_row_lift()).
+    local function paint_page_badge(item, bb, text, config, lift)
         local frame = item._zen_cover_frame
         if not frame or not frame.dimen then return end
         local size = badge_size(frame, config)
@@ -658,7 +659,7 @@ local function apply_zen_renderer()
         local width = widget_size.w + 2 * math.floor(size * 0.12)
         local inset = utils.getBadgeInset(math.floor(height / 2))
         local x = frame.dimen.x + inset
-        local y = frame.dimen.y + frame.dimen.h - height - inset
+        local y = frame.dimen.y + frame.dimen.h - height - inset - (lift or 0)
         paint_pill(bb, x - 2, y - 2, width + 4, height + 4, foreground)
         paint_pill(bb, x, y, width, height, color)
         widget:paintTo(bb, x + math.floor((width - widget_size.w) / 2),
@@ -667,7 +668,7 @@ local function apply_zen_renderer()
         return x + width + 2 - frame.dimen.x
     end
 
-    local function paint_series_badge(item, bb, text, config)
+    local function paint_series_badge(item, bb, text, config, lift)
         local frame = item._zen_cover_frame
         if not frame or not frame.dimen then return end
         local size = badge_size(frame, config)
@@ -687,7 +688,7 @@ local function apply_zen_renderer()
         local widget_size = widget:getSize()
         local inset = utils.getBadgeInset(radius)
         local x = frame.dimen.x + frame.dimen.w - radius - inset
-        local y = frame.dimen.y + frame.dimen.h - radius - inset
+        local y = frame.dimen.y + frame.dimen.h - radius - inset - (lift or 0)
         paint_circle(bb, x, y, radius + 2, foreground)
         paint_circle(bb, x, y, radius, color)
         widget:paintTo(bb, x - math.floor(widget_size.w / 2), y - math.floor(widget_size.h / 2))
@@ -759,18 +760,39 @@ local function apply_zen_renderer()
         widget:paintTo(bb, x - math.ceil(widget_size.w / 2), y - math.ceil(widget_size.h / 2))
     end
 
-    local function paint_native_progress(item, bb, config)
+    local function shows_native_progress(item, config)
         local badge = config.browser_cover_badges or {}
-        if badge.show_native_progress_bar ~= true or item.percent_finished == nil
-                or item._zen_effective_status == "new" or item._zen_effective_status == "tbr"
-                or item._zen_effective_status == "complete" then
-            return
-        end
         local frame = item._zen_cover_frame
-        if not frame or not frame.dimen then return end
-        local ProgressWidget = require("ui/widget/progresswidget")
+        return badge.show_native_progress_bar == true and item.percent_finished ~= nil
+            and item._zen_effective_status ~= "new" and item._zen_effective_status ~= "tbr"
+            and item._zen_effective_status ~= "complete"
+            and frame ~= nil and frame.dimen ~= nil
+    end
+
+    -- The bar's height, and its inset from the cover's sides and bottom
+    -- edge (it's centred in the badge row).
+    local function native_progress_geometry(frame, config)
         local height = Screen:scaleBySize(8)
-        local margin = math.floor((badge_size(frame, config) - height) / 2)
+        return height, math.floor((badge_size(frame, config) - height) / 2)
+    end
+
+    --- How far the bottom row of badges (the page count, the series number,
+    -- a book source's badge) moves up so it sits above the progress bar, as
+    -- it would above the cover's bottom edge; 0 without the bar.
+    local function bottom_row_lift(item, config)
+        if not shows_native_progress(item, config) then return 0 end
+        local frame = item._zen_cover_frame
+        local _height, margin = native_progress_geometry(frame, config)
+        -- The bar's top, from the cover's bottom edge, and the badges'
+        -- 2px outlines.
+        return badge_size(frame, config) - margin + 2
+    end
+
+    local function paint_native_progress(item, bb, config)
+        if not shows_native_progress(item, config) then return end
+        local frame = item._zen_cover_frame
+        local ProgressWidget = require("ui/widget/progresswidget")
+        local height, margin = native_progress_geometry(frame, config)
         local width = math.max(1, frame.dimen.w - 2 * margin)
         local progress = item._zen_native_progress
         if not progress then
@@ -876,11 +898,15 @@ local function apply_zen_renderer()
             paint_favorite_badge(self, bb, config)
             paint_native_progress(self, bb, config)
             paint_progress_badge(self, bb, config)
+            -- Above the progress bar, when it's shown.
+            local lift = bottom_row_lift(self, config)
             local pages_reach
             if self._zen_page_label then
-                pages_reach = paint_page_badge(self, bb, self._zen_page_label, config)
+                pages_reach = paint_page_badge(self, bb, self._zen_page_label, config, lift)
             end
-            if self._zen_series_label then paint_series_badge(self, bb, self._zen_series_label, config) end
+            if self._zen_series_label then
+                paint_series_badge(self, bb, self._zen_series_label, config, lift)
+            end
             local frame = self._zen_cover_frame
             local source_badge = frame and frame.dimen and SourceBadge.get(self.entry and self.entry.path)
             if source_badge then
@@ -892,7 +918,7 @@ local function apply_zen_renderer()
                     series_radius, pages_reach)
                 if shift then
                     SourceBadge.paint(bb, source_badge, frame.dimen.x, frame.dimen.y,
-                        frame.dimen.w, frame.dimen.h, config, shift)
+                        frame.dimen.w, frame.dimen.h, config, shift, lift)
                 end
             end
         end

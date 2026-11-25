@@ -9,7 +9,9 @@ describe("Zen renderer", function()
     local render_reusable
     local folder_requests
     local painted_text
+    local text_at -- text -> { x, y } where it was last painted
     local native_progress_paints
+    local native_progress_y
     local native_progress
     local banner_labels
     local banner_sizes
@@ -50,7 +52,9 @@ describe("Zen renderer", function()
         render_reusable = false
         folder_requests = {}
         painted_text = {}
+        text_at = {}
         native_progress_paints = 0
+        native_progress_y = nil
         native_progress = nil
         banner_labels = {}
         banner_sizes = {}
@@ -124,8 +128,9 @@ describe("Zen renderer", function()
                 values.getSize = function(self)
                     return { w = #tostring(self.text or "") * 5, h = 8 }
                 end
-                values.paintTo = function(self)
+                values.paintTo = function(self, _bb, x, y)
                     painted_text[#painted_text + 1] = self.text
+                    text_at[self.text] = { x = x, y = y }
                 end
                 values.free = function() end
                 return values
@@ -204,7 +209,10 @@ describe("Zen renderer", function()
             new = function(_self, values)
                 native_progress = values
                 values.setPercentage = function(self, percentage) self.percentage = percentage end
-                values.paintTo = function() native_progress_paints = native_progress_paints + 1 end
+                values.paintTo = function(_widget, _bb, _x, y)
+                    native_progress_paints = native_progress_paints + 1
+                    native_progress_y = y
+                end
                 return values
             end,
         })
@@ -1249,6 +1257,66 @@ describe("Zen renderer", function()
         for _i, key in ipairs({ "_zen_progress_badge", "_zen_pages_badge", "_zen_series_badge", "_zen_favorite_badge" }) do
             assert.are.equal(0, item[key].color)
         end
+    end)
+
+    it("moves the page count, series number and source badge above the progress bar", function()
+        _G.__ZEN_UI_PLUGIN.config.browser_cover_badges = {
+            show_native_progress_bar = true,
+            badge_size = "compact",
+        }
+        _G.__ZEN_UI_PLUGIN.config.browser_page_count = { show_page_count = true }
+        _G.__ZEN_UI_PLUGIN.config.browser_series_badge = { show_series_badge = true }
+        local source_lifts = {}
+        local real_source_badge = package.loaded["common/source_badge"]
+        finally(function() package.loaded["common/source_badge"] = real_source_badge end)
+        ZenSpec.replace("common/source_badge", {
+            get = function() return { icon = "/cloud.svg" } end,
+            shift = function() return 0 end,
+            paint = function(_bb, _badge, _x, _y, _w, _h, _config, _shift, lift)
+                source_lifts[#source_lifts + 1] = lift
+            end,
+        })
+        require("modules/filebrowser/patches/zen_renderer")()
+        local item = setmetatable({
+            _zen_cover_frame = { dimen = { x = 0, y = 0, w = 100, h = 150 }, bordersize = 1 },
+            _zen_effective_status = "reading",
+            percent_finished = 0.5,
+            _zen_page_label = "120 p.",
+            _zen_series_label = "#2",
+            _zen_is_book = true,
+            entry = { path = "/cloud.epub" },
+            filepath = "/cloud.epub",
+        }, { __index = MosaicMenu._zen_mosaic_item_class })
+        local bb = {
+            paintRectRGB32 = function() end,
+            paintRect = function() end,
+            paintRoundedRect = function() end,
+        }
+
+        -- Without the bar: in their usual place, at the cover's bottom edge.
+        _G.__ZEN_UI_PLUGIN.config.browser_cover_badges.show_native_progress_bar = false
+        item:paintTo(bb, 0, 0)
+        assert.are.equal(0, native_progress_paints)
+        local pages_low, series_low = text_at["120 p."].y, text_at["#2"].y
+        assert.are.same({ 0 }, source_lifts)
+
+        -- With it: the whole row moves up by the same amount, clear of the
+        -- bar's top (text is 8px tall in these specs).
+        _G.__ZEN_UI_PLUGIN.config.browser_cover_badges.show_native_progress_bar = true
+        item:paintTo(bb, 0, 0)
+        assert.are.equal(1, native_progress_paints)
+        local lift = pages_low - text_at["120 p."].y
+        assert.is_true(lift > 0)
+        assert.are.equal(lift, series_low - text_at["#2"].y)
+        assert.are.equal(lift, source_lifts[2])
+        assert.is_true(text_at["120 p."].y + 8 < native_progress_y)
+        assert.is_true(text_at["#2"].y + 8 < native_progress_y)
+
+        -- No bar for a finished book: back in place.
+        item._zen_effective_status = "complete"
+        item:paintTo(bb, 0, 0)
+        assert.are.equal(pages_low, text_at["120 p."].y)
+        assert.are.equal(0, source_lifts[3])
     end)
 
     it("resolves metadata during update and performs no metadata reads during paint", function()
