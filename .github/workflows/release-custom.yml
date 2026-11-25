@@ -49,10 +49,22 @@ jobs:
             fi
           fi
 
-          N=1
-          while gh release view "${BASE}-custom${N}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; do
-            N=$((N + 1))
-          done
+          # One more than the highest custom number for this version, so a
+          # deleted earlier release isn't numbered again. Tags count too: a
+          # deleted release can leave its tag, and reusing it would attach
+          # the new release to that tag's old commit.
+          RELEASE_TAGS=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+            --json tagName --jq '.[].tagName')
+          GIT_TAGS=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/${BASE}-custom" \
+            --jq '.[].ref | sub("^refs/tags/"; "")')
+          MAX=0
+          while read -r TAG; do
+            NUM="${TAG#"${BASE}-custom"}"
+            if [[ "$NUM" != "$TAG" && "$NUM" =~ ^[0-9]+$ ]] && (( 10#$NUM > MAX )); then
+              MAX=$((10#$NUM))
+            fi
+          done <<< "$RELEASE_TAGS"$'\n'"$GIT_TAGS"
+          N=$((MAX + 1))
           CUSTOM_TAG="${BASE}-custom${N}"
           CUSTOM_VERSION="${META_VERSION}-custom${N}"
           echo "tag=$CUSTOM_TAG" >> "$GITHUB_OUTPUT"
