@@ -271,6 +271,17 @@ describe("book sources", function()
         end)
 
         it("answers getDocProps, keeping database fields the source doesn't give", function()
+            local real_lfs = package.loaded["libs/libkoreader-lfs"]
+            finally(function() package.loaded["libs/libkoreader-lfs"] = real_lfs end)
+            local on_disk = { ["/kindle/book.azw3"] = true, ["/books/local.epub"] = true }
+            ZenSpec.replace("libs/libkoreader-lfs", {
+                attributes = function(path, what)
+                    assert.are.equal("mode", what)
+                    return on_disk[path] and "file" or nil
+                end,
+            })
+            -- A stale row for a book without a file isn't asked for.
+            db_rows["/books/cloud-1.epub"] = { title = "Stale", description = "Old" }
             BookSources.register("cloud", {
                 books = function() return {} end,
                 bookInfo = function(path)
@@ -677,5 +688,275 @@ describe("book sources", function()
         })
         assert.are.equal("cloud=v7\31other=3", BookSources.listingKey("/books"))
         assert.are.equal("", BookSources.listingKey("/elsewhere"))
+    end)
+    describe("folder listings", function()
+        local real_lfs, on_disk
+
+        before_each(function()
+            real_lfs = package.loaded["libs/libkoreader-lfs"]
+            on_disk = {}
+            ZenSpec.replace("libs/libkoreader-lfs", {
+                attributes = function(path, what)
+                    assert.are.equal("mode", what)
+                    return on_disk[path] and "file" or nil
+                end,
+            })
+        end)
+
+        after_each(function()
+            package.loaded["libs/libkoreader-lfs"] = real_lfs
+        end)
+
+        local function chooser(opts)
+            opts = opts or {}
+            return {
+                name = "filemanager",
+                show_file = function(_self, _name, fullpath)
+                    return not (opts.hidden and opts.hidden[fullpath])
+                end,
+                getListItem = function(_self, dir, name, fullpath, attr, collate)
+                    return { dir = dir, text = name, path = fullpath, attr = attr, collate = collate,
+                        doc_props = opts.item_props and opts.item_props[fullpath] or nil }
+                end,
+            }
+        end
+
+        local cloud_books
+        local function cloud_source(extra)
+            cloud_books = {
+                { file = "/books/A - One.epub", attr = { size = 100, modification = 5 },
+                  info = { title = "One", series = "S" } },
+                { file = "/books/A - Two.epub", info = {} },
+                { file = "/elsewhere/A - Three.epub", info = { title = "Three" } },
+                { file = "cloud:4", info = { title = "No folder" } },
+                { file = "/books/A - Unowned.epub", info = { title = "Not claimed by owns()" } },
+            }
+            local source = {
+                books = function() return cloud_books end,
+                owns = function(path)
+                    if path == "/books/A - Unowned.epub" then return false end
+                    for _i, book in ipairs(cloud_books) do
+                        if book.file == path then return true end
+                    end
+                    return false
+                end,
+            }
+            for k, v in pairs(extra or {}) do source[k] = v end
+            return source
+        end
+
+        it("finds the sources' books by folder, with attributes", function()
+            BookSources.register("cloud", cloud_source())
+
+            local entries = BookSources.folderBooks("/books/")
+            assert.are.equal(2, #entries)
+            assert.are.equal("/books/A - One.epub", entries[1].file)
+            assert.are.equal("A - One.epub", entries[1].name)
+            assert.are.same({ mode = "file", size = 100, modification = 5, access = 0, change = 0 },
+                entries[1].attr)
+            assert.are.same({ title = "One", series = "S" }, entries[1].info)
+            assert.are.same({ mode = "file", size = 0, modification = 0, access = 0, change = 0 },
+                entries[2].attr)
+            assert.are.equal(1, #BookSources.folderBooks("/elsewhere"))
+            assert.are.same({}, BookSources.folderBooks("/other"))
+        end)
+
+        it("reads books() again only after a change", function()
+            local calls = 0
+            BookSources.register("cloud", cloud_source({
+                books = function() calls = calls + 1; return cloud_books end,
+            }))
+            calls = 0
+            BookSources.folderBooks("/books")
+            BookSources.folderBooks("/elsewhere")
+            assert.are.equal(1, calls)
+            cloud_books[#cloud_books + 1] = { file = "/books/A - Five.epub", info = {} }
+            BookSources.changed()
+            assert.are.equal(3, #BookSources.folderBooks("/books"))
+            assert.are.equal(2, calls)
+        end)
+
+        it("adds them as files: items with collate, through the filters", function()
+            BookSources.register("cloud", cloud_source({
+                bookInfo = function(path)
+                    if path == "/books/A - Two.epub" then
+                        return { title = "Two (source)", authors = "A", cover_fetched = "Y" }
+                    end
+                end,
+            }))
+            local files = { { path = "/books/real.epub" } }
+
+            assert.are.equal(2, BookSources.addToListing(chooser(), "/books", "title", files))
+            assert.are.equal(3, #files)
+            local one, two = files[2], files[3]
+            assert.are.equal("/books", one.dir)
+            assert.are.equal("A - One.epub", one.text)
+            assert.are.equal("title", one.collate)
+            assert.are.equal(100, one.attr.size)
+            -- doc_props from bookInfo(), else books()' info.
+            assert.are.equal("One", one.doc_props.title)
+            assert.are.equal("S", one.doc_props.series)
+            assert.are.equal("One", one.doc_props.display_title)
+            assert.are.equal("Two (source)", two.doc_props.title)
+            assert.are.equal("A", two.doc_props.authors)
+        end)
+
+        it("keeps doc_props a sort already set, and names an untitled book by its file", function()
+            BookSources.register("cloud", cloud_source())
+            local files = {}
+            local fc = chooser({ item_props = { ["/books/A - One.epub"] = { title = "From sort" } } })
+            BookSources.addToListing(fc, "/books", "title", files)
+            assert.are.equal("From sort", files[1].doc_props.title)
+            assert.are.equal("A - Two", files[2].doc_props.display_title)
+        end)
+
+        it("skips books the filters hide and paths the listing has", function()
+            BookSources.register("cloud", cloud_source())
+            local files = { { path = "/books/A - One.epub" } } -- a real file at its path
+            local fc = chooser({ hidden = { ["/books/A - Two.epub"] = true } })
+            assert.are.equal(0, BookSources.addToListing(fc, "/books", "title", files))
+            assert.are.equal(1, #files)
+        end)
+
+        it("counts them with true placeholders, skipping books that have a file", function()
+            BookSources.register("cloud", cloud_source())
+            on_disk["/books/A - One.epub"] = true -- downloaded, or a Kindle book
+            local files = { true }
+            local fc = chooser()
+            fc.getListItem = function() error("getListItem should not be called") end
+            assert.are.equal(1, BookSources.addToListing(fc, "/books", nil, files))
+            assert.are.same({ true, true }, files)
+            -- The paths found on disk, when the caller knows them, instead.
+            files = {}
+            BookSources.addToListing(fc, "/books", nil, files, { ["/books/A - Two.epub"] = true })
+            assert.are.same({ true }, files)
+        end)
+
+        it("lists only books their source owns, and marks their items", function()
+            BookSources.register("cloud", cloud_source())
+            BookSources.register("ownerless", {
+                books = function() return { { file = "/books/B - Free.epub", info = {} } } end,
+            })
+            local files = {}
+            BookSources.addToListing(chooser(), "/books", "title", files)
+            assert.are.equal(2, #files)
+            for _i, item in ipairs(files) do
+                assert.are.equal("cloud", item._zen_source)
+                assert.are_not.equal("/books/A - Unowned.epub", item.path)
+                assert.are_not.equal("/books/B - Free.epub", item.path)
+            end
+        end)
+
+        it("hides a book the filter answers nil for, as the file browser does", function()
+            BookSources.register("cloud", cloud_source())
+            local fc = chooser()
+            fc.show_file = function(_self, name) return name:match("One") end
+            local shown = BookSources.visibleFolderBooks(fc, "/books", {})
+            assert.are.equal(1, #shown)
+            assert.are.equal("/books/A - One.epub", shown[1].file)
+            -- A filter that fails shows the book.
+            fc.show_file = function() error("boom") end
+            assert.are.equal(2, #BookSources.visibleFolderBooks(fc, "/books", {}))
+        end)
+
+        it("adds a folder's books to a listing once", function()
+            BookSources.register("cloud", cloud_source())
+            local fc = chooser()
+            local files = {}
+            assert.are.equal(2, BookSources.addToListing(fc, "/books", "title", files))
+            assert.are.equal(0, BookSources.addToListing(fc, "/books/", "title", files))
+            assert.are.equal(0, BookSources.addToListing(fc, "/books", nil, files))
+            assert.are.equal(2, #files)
+            -- Another listing (a new files table) gets them again.
+            assert.are.equal(2, BookSources.addToListing(fc, "/books", nil, {}))
+        end)
+
+        it("adds them once whichever getPathList wrapper is installed first", function()
+            local real_fc = package.loaded["ui/widget/filechooser"]
+            finally(function() package.loaded["ui/widget/filechooser"] = real_fc end)
+            BookSources.register("cloud", cloud_source())
+            -- Stands in for ZenOS's flat view, which adds the folder's books
+            -- to its own scan without calling the wrapper inside it.
+            local function flat_view(FileChooser)
+                local inner = FileChooser.getPathList
+                FileChooser.getPathList = function(self, path, collate, dirs, files)
+                    if self.flat then
+                        BookSources.addToListing(self, path, collate, files, {})
+                        return true
+                    end
+                    return inner(self, path, collate, dirs, files)
+                end
+            end
+            for _i, flat_first in ipairs({ false, true }) do
+                local FileChooser = { getPathList = function() return true end }
+                ZenSpec.replace("ui/widget/filechooser", FileChooser)
+                if flat_first then flat_view(FileChooser) end
+                BookSources.installListingIntegration()
+                if not flat_first then flat_view(FileChooser) end
+                local fc = chooser()
+                fc.flat = true
+                for _j, collate in ipairs({ "title", false }) do
+                    local files = {}
+                    FileChooser.getPathList(fc, "/books", collate or nil, {}, files)
+                    assert.are.equal(2, #files)
+                end
+            end
+        end)
+
+        it("wraps the file browser's getPathList, once", function()
+            local real_fc = package.loaded["ui/widget/filechooser"]
+            finally(function() package.loaded["ui/widget/filechooser"] = real_fc end)
+            local FileChooser = {
+                getPathList = function(_self, path, collate, _dirs, files)
+                    if path == "/books" then
+                        files[#files + 1] = collate and { path = "/books/real.epub" } or true
+                    end
+                    return "readable"
+                end,
+            }
+            ZenSpec.replace("ui/widget/filechooser", FileChooser)
+            BookSources.register("cloud", cloud_source())
+
+            assert.is_true(BookSources.installListingIntegration())
+            local wrapped = FileChooser.getPathList
+            assert.is_true(BookSources.installListingIntegration())
+            assert.are.equal(wrapped, FileChooser.getPathList)
+
+            local fc = chooser()
+            local dirs, files = {}, {}
+            assert.are.equal("readable", FileChooser.getPathList(fc, "/books", "title", dirs, files))
+            assert.are.equal(3, #files)
+            assert.are.equal("/books/A - One.epub", files[2].path)
+
+            -- Counting (a folder's book count in the folder above).
+            files = {}
+            FileChooser.getPathList(fc, "/books", nil, {}, files)
+            assert.are.same({ true, true, true }, files)
+
+            -- Not in other choosers (PathChooser).
+            files = {}
+            FileChooser.getPathList({ name = "pathchooser" }, "/books", "title", {}, files)
+            assert.are.equal(1, #files)
+        end)
+
+        it("keeps the listing when the sources' books fail to add", function()
+            local real_fc = package.loaded["ui/widget/filechooser"]
+            finally(function() package.loaded["ui/widget/filechooser"] = real_fc end)
+            local FileChooser = {
+                getPathList = function(_self, _path, _collate, _dirs, files)
+                    files[#files + 1] = { path = "/books/real.epub" }
+                    return true
+                end,
+            }
+            ZenSpec.replace("ui/widget/filechooser", FileChooser)
+            BookSources.register("cloud", cloud_source())
+            BookSources.installListingIntegration()
+            local fc = chooser()
+            fc.getListItem = function() error("changed signature") end
+            local files = {}
+            assert.is_true(FileChooser.getPathList(fc, "/books", "title", {}, files))
+            assert.are.equal(1, #files)
+            assert.is_true(#warnings >= 1)
+        end)
     end)
 end)
