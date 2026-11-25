@@ -99,6 +99,8 @@ function M.init(logger, plugin)
     end
 
     OptionalProvider.call("common/book_sources", "installMetadataIntegration")
+    -- Before browser_flat_view_compat, which adds them to its own scan.
+    OptionalProvider.call("common/book_sources", "installListingIntegration")
     OptionalProvider.call("common/comic_info", "install", plugin)
     -- Skip the BookInfo/BookInfoManager wrappers when Rakuyomi isn't installed (nil = scan failed).
     local ok_scan, PluginScan = pcall(require, "modules/menu/app_launcher/plugin_scan")
