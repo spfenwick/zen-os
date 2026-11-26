@@ -845,6 +845,26 @@ describe("book sources", function()
         assert.is_false(BookSources.ownsWithoutFile(nil))
     end)
 
+    it("tells a fileless source's books without asking the file system", function()
+        local looked = 0
+        ZenSpec.replace("util", { fileExists = function() looked = looked + 1; return false end })
+        BookSources.register("cloud", {
+            fileless = true,
+            books = function() return {} end,
+            owns = function(path) return path:sub(1, 3) == "/c/" end,
+        })
+        BookSources.register("kindle", {
+            books = function() return {} end,
+            owns = function(path) return path:sub(1, 3) == "/k/" end,
+        })
+
+        assert.is_true(BookSources.isFileless("/c/catalog.epub"))
+        assert.is_false(BookSources.isFileless("/k/owned.azw3"), "an owning source that isn't fileless")
+        assert.is_false(BookSources.isFileless("/books/local.epub"))
+        assert.is_false(BookSources.isFileless(nil))
+        assert.are.equal(0, looked)
+    end)
+
     describe("metadata edits", function()
         local custom, saved_edited, source_info
 
