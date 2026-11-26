@@ -347,6 +347,117 @@ describe("book sources", function()
         end)
     end)
 
+    describe("file search", function()
+        local matched, catalog, searcher
+
+        before_each(function()
+            matched = {}
+            catalog = {
+                { file = "/books/Moby Dick.epub", info = { title = "Moby Dick" }, attr = { size = 7, modification = 50 } },
+                { file = "/books/sub/Moby Two.epub", info = { title = "Moby Two" } },
+                { file = "/books/.hidden/Moby Hidden.epub", info = {} },
+                { file = "/books/Emma.epub", info = { title = "Emma" } },
+                { file = "/books/Moby Local.epub", info = {} },
+                { file = "/other/Moby Elsewhere.epub", info = {} },
+                { file = "/books/Moby.txt", info = {} },
+                { file = "/books/Moby Excluded.epub", info = {} },
+            }
+            ZenSpec.replace("util", { stringLower = string.lower })
+            ZenSpec.replace("ui/widget/filechooser", {
+                show_hidden = false,
+                show_dir = function() return true end,
+                show_file = function(_self, name) return not name:find("Excluded", 1, true) end,
+            })
+            ZenSpec.replace("document/documentregistry", {
+                hasProvider = function(_self, path) return path:match("%.epub$") ~= nil end,
+            })
+            BookSources.register("cloud", {
+                fileless = true,
+                books = function() return catalog end,
+                owns = function() return true end,
+            })
+            BookSources.register("mixed", {
+                books = function() return { { file = "/books/Moby Mixed.epub", info = {} } } end,
+                owns = function() return true end,
+            })
+            searcher = {
+                include_content = true,
+                no_metadata_count = 2,
+                isFileMatch = function(self, name, path, query, is_file)
+                    matched[#matched + 1] = { path = path, query = query, is_file = is_file,
+                        content = self.include_content }
+                    self.no_metadata_count = self.no_metadata_count + 1
+                    return name:lower():find(query, 1, true) ~= nil
+                end,
+            }
+        end)
+
+        after_each(function()
+            for _i, name in ipairs({ "ui/widget/filechooser", "document/documentregistry", "util" }) do
+                ZenSpec.unload(name)
+            end
+        end)
+
+        local function paths(entries)
+            local out = {}
+            for _i, entry in ipairs(entries) do out[#out + 1] = entry[2] end
+            table.sort(out)
+            return out
+        end
+
+        it("finds the fileless sources' matching books in the folder searched", function()
+            local found = { ["/books/Moby Local.epub"] = true }
+            local entries = BookSources.searchResults(searcher, "/books", "Moby", found)
+
+            assert.are.same({ { "Moby Dick.epub", "/books/Moby Dick.epub",
+                { mode = "file", size = 7, modification = 50, access = 50, change = 50 } } }, entries)
+            assert.are.equal(2, searcher.no_metadata_count)
+            assert.is_true(searcher.include_content)
+            assert.is_true(#matched > 0)
+            for _i, call in ipairs(matched) do
+                assert.are.equal("moby", call.query)
+                assert.is_true(call.is_file)
+                assert.is_false(call.content)
+            end
+        end)
+
+        it("searches subfolders as KOReader walks them", function()
+            searcher.include_subfolders = true
+            assert.are.same({ "/books/Moby Dick.epub", "/books/Moby Local.epub", "/books/sub/Moby Two.epub" },
+                paths(BookSources.searchResults(searcher, "/books", "moby")))
+            assert.are.equal(4, #BookSources.searchResults(searcher, "/", "moby"))
+            assert.are.same({ "/other/Moby Elsewhere.epub" },
+                paths(BookSources.searchResults(searcher, "/other", "moby")))
+            assert.are.same({}, BookSources.searchResults(searcher, nil, "moby"))
+        end)
+
+        it("prepares the search text as KOReader's getList does", function()
+            searcher.use_patterns = true
+            BookSources.searchResults(searcher, "/books", "Mo?y*.epub")
+            assert.are.equal("mo.y.*%.epub", matched[1].query)
+        end)
+
+        it("puts the searcher back when matching fails", function()
+            searcher.isFileMatch = function() error("matching failed") end
+            assert.has_error(function() BookSources.searchResults(searcher, "/books", "moby") end)
+            assert.is_true(searcher.include_content)
+            assert.are.equal(2, searcher.no_metadata_count)
+        end)
+
+        it("builds the folder index ahead of a search", function()
+            local calls = 0
+            BookSources.register("cloud", {
+                fileless = true,
+                books = function() calls = calls + 1 return catalog end,
+                owns = function() return true end,
+            })
+            BookSources.prepareFolderIndex()
+            assert.are.equal(1, calls)
+            BookSources.searchResults(searcher, "/books", "moby")
+            assert.are.equal(1, calls)
+        end)
+    end)
+
     it("changes revision when sources change", function()
         local first = BookSources.revision()
         BookSources.register("cloud", { books = function() return {} end })
