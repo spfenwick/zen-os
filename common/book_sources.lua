@@ -71,6 +71,19 @@
 --       -- metadata announces it as KOReader does, with the
 --       -- InvalidateMetadataCache event naming the book.
 --       bookInfo = function(path, get_cover) return { ... } end,
+--       -- Optional: get the covers of books it owns that have no file on
+--       -- the device (there is nothing for CoverBrowser to extract them
+--       -- from). ZenOS calls it, without waiting, with the paths that
+--       -- CoverBrowser asks to extract (BookInfoManager:extractInBackground)
+--       -- and never hands those paths to CoverBrowser's extraction. Fetch
+--       -- in the background and call changed({ path, ... }) as covers arrive
+--       -- (ZenOS then redraws the views showing them), or if they can't be
+--       -- fetched now. No need to hook CoverBrowser: a source that makes
+--       -- BookInfoManager:isExtractingInBackground() report its downloads
+--       -- holds back CoverBrowser's extraction of files until they finish.
+--       -- Without fetchCovers, those paths are queued with the files to
+--       -- extract, as files are.
+--       fetchCovers = function(paths) end,
 --       -- Optional: for a source whose books appear in file browser
 --       -- listings (it adds them itself, e.g. by wrapping
 --       -- FileChooser:getList). Return a string for each folder whose
@@ -401,6 +414,36 @@ function M.ownsWithoutFile(path)
     if owner(path) == nil then return false end
     local ok, util = pcall(require, "util")
     return not (ok and type(util.fileExists) == "function" and util.fileExists(path))
+end
+
+--- Hands books' cover requests to their sources (see fetchCovers): each
+-- path a source owns without a file goes to that source's fetchCovers(), in
+-- one call per source. Returns the paths it didn't hand to a source (not a
+-- source's book without a file, or its source has no fetchCovers, or that
+-- call failed), in their given order; these are for CoverBrowser to extract.
+function M.fetchCovers(paths)
+    local left, by_source, ids = {}, {}, {}
+    for _i, path in ipairs(type(paths) == "table" and paths or {}) do
+        local id, source = owner(path)
+        if id and type(source.fetchCovers) == "function" and M.ownsWithoutFile(path) then
+            if not by_source[id] then
+                by_source[id] = {}
+                ids[#ids + 1] = id
+            end
+            table.insert(by_source[id], path)
+        else
+            left[#left + 1] = path
+        end
+    end
+    for _i, id in ipairs(ids) do
+        local source = sources[id]
+        local ok, err = pcall(source.fetchCovers, by_source[id])
+        if not ok then
+            logger.warn("book source failed", id, "fetchCovers", err)
+            for _j, path in ipairs(by_source[id]) do left[#left + 1] = path end
+        end
+    end
+    return left
 end
 
 -- A path's folder, as lfs spells it ("/" for the root, no trailing "/").

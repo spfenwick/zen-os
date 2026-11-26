@@ -845,6 +845,41 @@ describe("book sources", function()
         assert.is_false(BookSources.ownsWithoutFile(nil))
     end)
 
+    it("hands covers of books without a file to their source's fetchCovers", function()
+        ZenSpec.replace("util", {
+            fileExists = function(path) return path == "/c/downloaded.epub" end,
+        })
+        local calls = {}
+        BookSources.register("cloud", {
+            books = function() return {} end,
+            owns = function(path) return path:sub(1, 3) == "/c/" end,
+            fetchCovers = function(paths) calls[#calls + 1] = paths end,
+        })
+        BookSources.register("nofetch", {
+            books = function() return {} end,
+            owns = function(path) return path:sub(1, 3) == "/n/" end,
+        })
+
+        local left = BookSources.fetchCovers({
+            "/books/a.epub", "/c/one.epub", "/c/downloaded.epub", "/n/x.epub", "/c/two.epub",
+        })
+        assert.are.same({ { "/c/one.epub", "/c/two.epub" } }, calls, "one call per source")
+        assert.are.same({ "/books/a.epub", "/c/downloaded.epub", "/n/x.epub" }, left)
+        assert.are.same({}, BookSources.fetchCovers(nil))
+    end)
+
+    it("leaves covers for CoverBrowser when a source's fetchCovers fails", function()
+        ZenSpec.replace("util", { fileExists = function() return false end })
+        BookSources.register("cloud", {
+            books = function() return {} end,
+            owns = function(path) return path:sub(1, 3) == "/c/" end,
+            fetchCovers = function() error("offline") end,
+        })
+
+        assert.are.same({ "/c/one.epub" }, BookSources.fetchCovers({ "/c/one.epub" }))
+        assert.are.equal("fetchCovers", warnings[#warnings][3])
+    end)
+
     it("tells a fileless source's books without asking the file system", function()
         local looked = 0
         ZenSpec.replace("util", { fileExists = function() looked = looked + 1; return false end })
