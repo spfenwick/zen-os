@@ -13,7 +13,24 @@
 --       -- series, series_index, language, keywords (authors and keywords
 --       -- joined with "\n", as in bookinfo). Called when db_bookinfo
 --       -- rebuilds a grouping, so return a cached list if it is costly.
+--       -- A book without a file on the device that its source owns (see
+--       -- owns) is also listed in ZenOS's flat view of the folders above
+--       -- it ("Show all files from subfolders"), and, for a fileless
+--       -- source, in its folder's listing and folder cover; it may give
+--       -- attr = { size, modification, access, change } for the date and
+--       -- size sorts.
 --       books = function() return { ... } end,
+--       -- Optional: true when books() only has books without a file on the
+--       -- device (e.g. a catalog's books not downloaded yet), all owned by
+--       -- this source. ZenOS then lists them in the file browser like files:
+--       -- in their folder (counted in the folders above it), on folder
+--       -- covers (count, cover images, "all finished") and in the flat view,
+--       -- through the browser's filters (show_file: hidden, excluded,
+--       -- status). It answers getDocProps() for them from bookInfo()
+--       -- alone, without CoverBrowser's database, which has no row for a
+--       -- book without a file. Its listingKey() must then cover the books'
+--       -- folders and the folders above them.
+--       fileless = true,
 --       -- Optional: true for paths this source owns. Needed for open and
 --       -- showContextMenu, and for its books to stay in the reading history
 --       -- views (Home, book switcher) and To Be Read when their file is
@@ -353,7 +370,7 @@ function M.books()
                         and type(book.info) == "table" then
                     if any_edited and edited[book.file] then
                         local info = with_edits(book.file, book.info, edited)
-                        if info ~= book.info then book = { file = book.file, info = info } end
+                        if info ~= book.info then book = { file = book.file, info = info, attr = book.attr } end
                     end
                     out[#out + 1] = book
                 end
@@ -383,6 +400,164 @@ function M.ownsWithoutFile(path)
     if owner(path) == nil then return false end
     local ok, util = pcall(require, "util")
     return not (ok and type(util.fileExists) == "function" and util.fileExists(path))
+end
+
+-- A path's folder, as lfs spells it ("/" for the root, no trailing "/").
+local function folder_of(path)
+    local folder, name = path:match("^(.*)/([^/]+)$")
+    if folder == "" then folder = "/" end
+    return folder, name
+end
+
+local function file_attr(attr)
+    attr = type(attr) == "table" and attr or {}
+    local modification = tonumber(attr.modification) or 0
+    return {
+        mode = "file",
+        size = tonumber(attr.size) or 0,
+        modification = modification,
+        access = tonumber(attr.access) or modification,
+        change = tonumber(attr.change) or modification,
+    }
+end
+
+-- Each source's owned books by folder: { [id] = { [folder] = { book, ... } } },
+-- built when first asked after the books changed (revision: a source calls
+-- changed() when its books do). A listing, a count or a folder cover then
+-- looks up its folder instead of going through every book.
+local folder_index = { revision = nil, by_source = {} }
+
+local function books_by_folder(id, source)
+    if folder_index.revision ~= revision then
+        folder_index = { revision = revision, by_source = {} }
+    end
+    local index = folder_index.by_source[id]
+    if index then return index end
+    index = {}
+    local books = call(id, source, "books")
+    -- A failed lookup isn't cached: the next listing asks again.
+    if type(books) ~= "table" then return index end
+    for _i, book in ipairs(books) do
+        local file = type(book) == "table" and book.file
+        if type(file) == "string" and file ~= "" then
+            local folder, name = folder_of(file)
+            if folder and call(id, source, "owns", file) == true then
+                index[folder] = index[folder] or {}
+                table.insert(index[folder], { file = file, name = name, attr = book.attr })
+            end
+        end
+    end
+    folder_index.by_source[id] = index
+    return index
+end
+
+--- The sources' books without a file in the given folders ({ [path] =
+-- true }), for the file browser's listings, flat view and folder covers.
+-- Only books their source owns (taps, long-presses and file operations go
+-- to it). present ({ [path] = true }) is what the scan found as files there:
+-- those are left out, so a book whose file is on the device is listed once,
+-- as the file. Without present (a scan that only counts, or a listing that
+-- keeps to what it can't mistake), only fileless sources' books, which have
+-- no file by definition; with fileless_only, also only theirs. Returns
+-- { { file, name, folder, attr }, ... }, attr a file's lfs attributes (from
+-- the book's attr, else zero; a new table each time).
+function M.booksWithoutFile(folders, present, fileless_only)
+    local out = {}
+    if type(folders) ~= "table" or next(folders) == nil then return out end
+    if type(present) ~= "table" then present, fileless_only = {}, true end
+    load_builtins()
+    for _i, id in ipairs(order) do
+        local source = sources[id]
+        if source.fileless == true or not fileless_only then
+            local index = books_by_folder(id, source)
+            for folder in pairs(folders) do
+                for _j, book in ipairs(index[folder] or {}) do
+                    if not present[book.file] then
+                        out[#out + 1] = { file = book.file, name = book.name, folder = folder,
+                            attr = file_attr(book.attr) }
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+--- True when path may be selected in the file browser's select mode, whose
+-- actions are file operations (delete, move, copy, reading status): not a
+-- source's book without a file on the device.
+function M.selectable(path)
+    return not M.ownsWithoutFile(path)
+end
+
+-- Keeps books without a file out of a file browser selection table (it
+-- drops them as they're added, however they're added).
+local selection_guard = {
+    __newindex = function(selection, path, value)
+        if value and type(path) == "string" and not M.selectable(path) then return end
+        rawset(selection, path, value)
+    end,
+}
+
+--- Guards a selection table (FileManager.selected_files) and returns it.
+function M.guardSelection(selection)
+    if type(selection) == "table" and getmetatable(selection) == nil then
+        for path, value in pairs(selection) do
+            if value and type(path) == "string" and not M.selectable(path) then selection[path] = nil end
+        end
+        setmetatable(selection, selection_guard)
+    end
+    return selection
+end
+
+--- Installs the selection guard on the file browser's select mode: every
+-- selection it starts is guarded, and "Select all files in folder" leaves
+-- books without a file unselected (and not dimmed). Collections' and file
+-- search's select modes are left alone: theirs act on collections, or hand
+-- the selection to the file browser.
+function M.installSelectionGuard()
+    local ok_fm, FileManager = pcall(require, "apps/filemanager/filemanager")
+    if not ok_fm or type(FileManager) ~= "table" or type(FileManager.onToggleSelectMode) ~= "function" then
+        return false
+    end
+    if FileManager._zen_selection_guarded then return true end
+    FileManager._zen_selection_guarded = true
+    local orig_toggle = FileManager.onToggleSelectMode
+    function FileManager:onToggleSelectMode(...)
+        local result = orig_toggle(self, ...)
+        M.guardSelection(self.selected_files)
+        return result
+    end
+    local ok_fc, FileChooser = pcall(require, "ui/widget/filechooser")
+    if ok_fc and type(FileChooser) == "table" and type(FileChooser.selectAllFilesInFolder) == "function" then
+        local orig_all = FileChooser.selectAllFilesInFolder
+        function FileChooser:selectAllFilesInFolder(do_select, ...)
+            local result = orig_all(self, do_select, ...)
+            local selection = self.ui and self.ui.selected_files
+            if do_select and type(selection) == "table" then
+                local undimmed = false
+                for _i, item in ipairs(self.item_table or {}) do
+                    if item.is_file and item.dim and not selection[item.path] then
+                        item.dim = nil
+                        undimmed = true
+                    end
+                end
+                if undimmed then self:updateItems(1, true) end
+            end
+            return result
+        end
+    end
+    return true
+end
+
+-- The fileless source owning path, if any (see fileless).
+local function fileless_owner(path)
+    if type(path) ~= "string" then return nil end
+    load_builtins()
+    for _i, id in ipairs(order) do
+        local source = sources[id]
+        if source.fileless == true and call(id, source, "owns", path) == true then return id end
+    end
 end
 
 -- The source handler running now ("open" or "showContextMenu"), if any: a
@@ -713,6 +888,21 @@ local DOC_PROPS = { "pages", "title", "authors", "series", "series_index",
 --- Routes CoverBrowser's getBookInfo() and getDocProps() through the
 -- sources, once for all of them. Installed before ZenOS's own wrappers
 -- (cover caches), so those see sources' books like any other.
+--- getDocProps() fields for a source's book, from bookInfo() (with ZenOS's
+-- edits), and display_title as KOReader sets it; nil for other books. Set
+-- on the items ZenOS lists for books without a file: code that reads an
+-- item's metadata from CoverBrowser's database when it has none (series
+-- grouping) would find no row for them.
+function M.docProps(path)
+    local info = M.bookInfo(path, false)
+    if type(info) ~= "table" then return nil end
+    local props = {}
+    for _i, key in ipairs(DOC_PROPS) do props[key] = info[key] end
+    props.display_title = props.title
+        or ((path:match("[^/]+$") or path):gsub("%.[^.]*$", ""))
+    return props
+end
+
 function M.installMetadataIntegration()
     local ok, BookInfoManager = pcall(require, "bookinfomanager")
     if not ok or type(BookInfoManager) ~= "table"
@@ -733,7 +923,10 @@ function M.installMetadataIntegration()
     if type(orig_getDocProps) == "function" then
         function BookInfoManager:getDocProps(filepath, ...)
             local info = M.bookInfo(filepath, false)
-            local props = orig_getDocProps(self, filepath, ...)
+            -- A fileless source's book has no row: no database query (it
+            -- costs most when sorting a folder of them by metadata).
+            local props = not (info and fileless_owner(filepath))
+                and orig_getDocProps(self, filepath, ...) or nil
             if not info then return props end
             -- A book with a CoverBrowser row (a Kindle book on disk) keeps
             -- the fields its source doesn't give.
