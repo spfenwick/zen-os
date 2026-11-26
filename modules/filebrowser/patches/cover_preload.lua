@@ -129,6 +129,42 @@ local function apply_cover_preload()
             and BookInfoManager:isExtractingInBackground()
     end
 
+    -- Whether CoverBrowser's own extraction subprocess is running. A book
+    -- source that fetches its covers some other way can report that through
+    -- isExtractingInBackground() (so CoverBrowser keeps polling for them),
+    -- but a source's download must not hold back extracting real files.
+    local function is_extracting_files()
+        local pids = BookInfoManager.subprocesses_pids
+        if type(pids) == "table" then return #pids > 0 end
+        return is_extracting()
+    end
+
+    -- Hands the covers of books a source owns with no file (e.g. a catalog
+    -- book not downloaded) to that source's fetchCovers, so CoverBrowser
+    -- never extracts them. Returns the set of paths handed to a source.
+    local function fetch_source_covers(files)
+        local BookSources = package.loaded["common/book_sources"]
+        if type(BookSources) ~= "table" or type(BookSources.fetchCovers) ~= "function" then
+            return {}
+        end
+        local paths = {}
+        for index = 1, #(files or {}) do
+            local item = files[index]
+            if type(item) == "table" and type(item.filepath) == "string" then
+                paths[#paths + 1] = item.filepath
+            end
+        end
+        if #paths == 0 then return {} end
+        local ok, left = pcall(BookSources.fetchCovers, paths)
+        if not ok or type(left) ~= "table" then return {} end
+        local handed, kept = {}, {}
+        for _i, path in ipairs(left) do kept[path] = true end
+        for _i, path in ipairs(paths) do
+            if not kept[path] then handed[path] = true end
+        end
+        return handed
+    end
+
     local function hidden_home_bootstrap(menu)
         return rawget(_G, "__ZEN_UI_HIDDEN_HOME_BOOTSTRAP") == true
             or (menu and menu._zen_hidden_home_startup == true)
@@ -187,7 +223,7 @@ local function apply_cover_preload()
 
     -- Polling may re-cache pre-extraction metadata while the child is running.
     local function reconcile_completed_extraction()
-        if is_extracting() then return false end
+        if is_extracting_files() then return false end
         local files = BookInfoManager._zen_cover_extract_active
         if type(files) ~= "table" then return false end
         BookInfoManager._zen_cover_extract_active = nil
@@ -251,18 +287,27 @@ local function apply_cover_preload()
             )
         end
 
+        -- Copies the request's files to extract, leaving out the books whose
+        -- covers their source fetches (handed to it already: they start no
+        -- subprocess and change no metadata, so are never queued or
+        -- reconciled). Returns the copy and how many were handed to sources.
         local function copy_files(files)
-            local copied = {}
+            local handed = fetch_source_covers(files)
+            local copied, sourced = {}, 0
             for index = 1, #(files or {}) do
                 local item = files[index]
                 if item and item.filepath then
-                    copied[#copied + 1] = {
-                        filepath = item.filepath,
-                        cover_specs = item.cover_specs,
-                    }
+                    if handed[item.filepath] then
+                        sourced = sourced + 1
+                    else
+                        copied[#copied + 1] = {
+                            filepath = item.filepath,
+                            cover_specs = item.cover_specs,
+                        }
+                    end
                 end
             end
-            return copied
+            return copied, sourced
         end
 
         local function watch_queue()
@@ -271,7 +316,7 @@ local function apply_cover_preload()
             local polls = 0
             watch = function()
                 if BookInfoManager._zen_cover_extract_watch ~= watch then return end
-                if is_extracting() then
+                if is_extracting_files() then
                     polls = polls + 1
                     UIManager:scheduleIn(cover_poll_delay(polls), watch)
                     return
@@ -295,9 +340,14 @@ local function apply_cover_preload()
         end
 
         function BookInfoManager:extractInBackground(files, ...)
-            local copied = copy_files(files)
-            if #copied == 0 then return original_extract(self, files, ...) end
-            if is_extracting() then
+            local copied, sourced = copy_files(files)
+            if #copied == 0 then
+                -- All handed to their sources: success, though nothing is
+                -- extracted (CoverBrowser shows an error otherwise).
+                if sourced > 0 then return true end
+                return original_extract(self, files, ...)
+            end
+            if is_extracting_files() then
                 self._zen_cover_extract_pending = copied
                 logger.measure("Cover extraction queued", 0,
                     "files=", #copied,
@@ -1229,7 +1279,7 @@ local function apply_cover_preload()
                 if item then before_items[item] = item_refresh_region(item) end
             end
             local started_at = now()
-            if not is_extracting() then reconcile_completed_extraction() end
+            if not is_extracting_files() then reconcile_completed_extraction() end
             local original_setDirty = UIManager.setDirty
             local held_paint = false
             UIManager.setDirty = function(ui, widget, ...)
