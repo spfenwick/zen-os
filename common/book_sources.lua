@@ -24,12 +24,13 @@
 --       -- device (e.g. a catalog's books not downloaded yet), all owned by
 --       -- this source. ZenOS then lists them in the file browser like files:
 --       -- in their folder (counted in the folders above it), on folder
---       -- covers (count, cover images, "all finished") and in the flat view,
---       -- through the browser's filters (show_file: hidden, excluded,
---       -- status). It answers getDocProps() for them from bookInfo()
---       -- alone, without CoverBrowser's database, which has no row for a
---       -- book without a file. Its listingKey() must then cover the books'
---       -- folders and the folders above them.
+--       -- covers (count, cover images, "all finished"), in the flat view and
+--       -- in ZenOS's file search results (matched as files are; see
+--       -- searchResults), through the browser's filters (show_file:
+--       -- hidden, excluded, status). It answers getDocProps() for them from
+--       -- bookInfo() alone, without CoverBrowser's database, which has no
+--       -- row for a book without a file. Its listingKey() must then cover
+--       -- the books' folders and the folders above them.
 --       -- Covers are the source's to fetch. CoverBrowser still asks to
 --       -- extract them (BookInfoManager:extractInBackground), and
 --       -- extracting a path with no file saves a row calling the book
@@ -463,7 +464,8 @@ local function books_by_folder(id, source)
 end
 
 --- The sources' books without a file in the given folders ({ [path] =
--- true }), for the file browser's listings, flat view and folder covers.
+-- true }, or a function(folder) answering whether a folder is wanted), for
+-- the file browser's listings, flat view, folder covers and file search.
 -- Only books their source owns (taps, long-presses and file operations go
 -- to it). present ({ [path] = true }) is what the scan found as files there:
 -- those are left out, so a book whose file is on the device is listed once,
@@ -474,24 +476,119 @@ end
 -- the book's attr, else zero; a new table each time).
 function M.booksWithoutFile(folders, present, fileless_only)
     local out = {}
-    if type(folders) ~= "table" or next(folders) == nil then return out end
+    local wanted = type(folders) == "function" and folders or nil
+    if not wanted and (type(folders) ~= "table" or next(folders) == nil) then return out end
     if type(present) ~= "table" then present, fileless_only = {}, true end
     load_builtins()
+    local function add(index, folder)
+        for _j, book in ipairs(index[folder] or {}) do
+            if not present[book.file] then
+                out[#out + 1] = { file = book.file, name = book.name, folder = folder,
+                    attr = file_attr(book.attr) }
+            end
+        end
+    end
     for _i, id in ipairs(order) do
         local source = sources[id]
         if source.fileless == true or not fileless_only then
             local index = books_by_folder(id, source)
-            for folder in pairs(folders) do
-                for _j, book in ipairs(index[folder] or {}) do
-                    if not present[book.file] then
-                        out[#out + 1] = { file = book.file, name = book.name, folder = folder,
-                            attr = file_attr(book.attr) }
-                    end
+            if wanted then
+                for folder in pairs(index) do
+                    if wanted(folder) then add(index, folder) end
                 end
+            else
+                for folder in pairs(folders) do add(index, folder) end
             end
         end
     end
     return out
+end
+
+-- File search ---------------------------------------------------------------
+
+-- Folders KOReader's file search never walks (FileSearcher:getList).
+local SEARCH_SKIPPED_FOLDERS = {
+    ["/dev"] = true, ["/proc"] = true, ["/sys"] = true, ["/mnt/base-us"] = true,
+}
+
+-- True when a search of root walks folder, as FileSearcher:getList walks:
+-- root itself, and with subfolders every folder below it reached through
+-- folders the browser shows (hidden ones only when shown; not the system
+-- folders it skips).
+local function searched_folder(folder, root, subfolders, FileChooser)
+    if folder == root then return true end
+    if not subfolders then return false end
+    local prefix = root == "/" and "/" or root .. "/"
+    if folder:sub(1, #prefix) ~= prefix then return false end
+    local walked = root
+    for name in folder:sub(#prefix + 1):gmatch("[^/]+") do
+        walked = walked == "/" and "/" .. name or walked .. "/" .. name
+        if SEARCH_SKIPPED_FOLDERS[walked]
+                or (not FileChooser.show_hidden and name:sub(1, 1) == ".")
+                or not FileChooser:show_dir(name) then
+            return false
+        end
+    end
+    return true
+end
+
+-- The search text as FileSearcher:getList hands it to isFileMatch (getList
+-- keeps it in a local): lowercase (ZenOS's search is never case
+-- sensitive), and with "Use patterns", wildcards made Lua patterns.
+local function search_query(searcher, text)
+    if text == "*" then return text end
+    local ok, util = pcall(require, "util")
+    text = ok and type(util.stringLower) == "function" and util.stringLower(text) or text:lower()
+    if searcher.use_patterns then
+        text = text:gsub("%.", "%%%."):gsub("%*", "%.%*"):gsub("%?", "%.")
+    end
+    return text
+end
+
+--- The fileless sources' books that a file search of root finds, as
+-- FileSearcher:getList's file entries: { { name, fullpath, attr }, ... }.
+-- For ZenOS's search, after getList for each home folder: KOReader's walk
+-- only sees files. root is that folder, as ZenOS spells it (no trailing
+-- "/"). Books in the folders that walk covers (root; with
+-- searcher.include_subfolders, the folders below it it reaches), not in
+-- found ({ [path] = true }, what the walk found), through the walk's
+-- filters, matched by the searcher's isFileMatch with the text getList
+-- would pass it. search_string is FileSearcher.search_string.
+function M.searchResults(searcher, root, search_string, found)
+    local out = {}
+    if type(searcher) ~= "table" or type(root) ~= "string" or root == "" then return out end
+    local FileChooser = require("ui/widget/filechooser")
+    local DocumentRegistry = require("document/documentregistry")
+    local subfolders = searcher.include_subfolders
+    local books = M.booksWithoutFile(function(folder)
+        return searched_folder(folder, root, subfolders, FileChooser)
+    end, found, true)
+    if #books == 0 then return out end
+    local query = search_query(searcher, search_string or "")
+    -- Content search would open the book, which has no file. And these
+    -- books have metadata (from their source): they add nothing to "N
+    -- books have been skipped".
+    local content, no_metadata = searcher.include_content, searcher.no_metadata_count
+    searcher.include_content = false
+    local ok, err = pcall(function()
+        for _i, book in ipairs(books) do
+            if not book.name:match("^%._")
+                    and (FileChooser.show_unsupported or DocumentRegistry:hasProvider(book.file))
+                    and FileChooser:show_file(book.name, book.file)
+                    and searcher:isFileMatch(book.name, book.file, query, true) then
+                out[#out + 1] = { book.name, book.file, book.attr }
+            end
+        end
+    end)
+    searcher.include_content, searcher.no_metadata_count = content, no_metadata
+    if not ok then error(err, 0) end
+    return out
+end
+
+--- Builds the folder index now (e.g. before file search forks its
+-- subprocess, which then inherits it instead of building it each search).
+function M.prepareFolderIndex()
+    M.booksWithoutFile(function() return false end)
 end
 
 --- True when path may be selected in the file browser's select mode, whose
@@ -523,9 +620,10 @@ end
 
 --- Installs the selection guard on the file browser's select mode: every
 -- selection it starts is guarded, and "Select all files in folder" leaves
--- books without a file unselected (and not dimmed). Collections' and file
--- search's select modes are left alone: theirs act on collections, or hand
--- the selection to the file browser.
+-- books without a file unselected (and not dimmed). File search's select
+-- mode is guarded too, as it hands its selection to the file browser ("Select
+-- in file browser"); its "Select all" leaves those books undimmed.
+-- Collections' select mode is left alone: it acts on collections.
 function M.installSelectionGuard()
     local ok_fm, FileManager = pcall(require, "apps/filemanager/filemanager")
     if not ok_fm or type(FileManager) ~= "table" or type(FileManager.onToggleSelectMode) ~= "function" then
@@ -554,6 +652,32 @@ function M.installSelectionGuard()
                     end
                 end
                 if undimmed then self:updateItems(1, true) end
+            end
+            return result
+        end
+    end
+    local ok_fs, FileSearcher = pcall(require, "apps/filemanager/filemanagerfilesearcher")
+    if ok_fs and type(FileSearcher) == "table" and type(FileSearcher.setSelectMode) == "function" then
+        local orig_select = FileSearcher.setSelectMode
+        function FileSearcher:setSelectMode(...)
+            local result = orig_select(self, ...)
+            local selection = M.guardSelection(self.selected_files)
+            local menu = self.booklist_menu
+            if type(selection) == "table" and type(menu) == "table"
+                    and type(menu.updateItems) == "function" and not menu._zen_selection_undim then
+                -- "Select all" dims every file, then updates the list:
+                -- undim those the guarded selection left out first.
+                menu._zen_selection_undim = true
+                local orig_update = menu.updateItems
+                menu.updateItems = function(menu_self, ...)
+                    local current = self.selected_files
+                    if type(current) == "table" then
+                        for _i, item in ipairs(menu_self.item_table or {}) do
+                            if item.is_file and item.dim and not current[item.path] then item.dim = nil end
+                        end
+                    end
+                    return orig_update(menu_self, ...)
+                end
             end
             return result
         end
