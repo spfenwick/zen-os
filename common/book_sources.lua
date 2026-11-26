@@ -684,6 +684,13 @@ local function fileless_owner(path)
     end
 end
 
+--- True when a fileless source owns path: by the source's word there's no
+-- file there, so there's nothing to look up on disk. Asks no file system:
+-- a lookup of a missing name in a big FAT folder costs about 1 ms on a Kobo.
+function M.isFileless(path)
+    return fileless_owner(path) ~= nil
+end
+
 -- The source handler running now ("open" or "showContextMenu"), if any: a
 -- source opening a file or showing ZenOS's dialog from its handler goes
 -- through the wrappers that ask the sources, and gets ZenOS's own.
